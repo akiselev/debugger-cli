@@ -205,6 +205,9 @@ debugger detach
 # Stop debugging (terminates debuggee and daemon)
 debugger stop
 
+# Restart program (re-launch with same arguments)
+debugger restart
+
 # Check daemon/session status
 debugger status
 ```
@@ -223,6 +226,9 @@ debugger breakpoint add -f "mymodule::MyStruct::method"
 # Add conditional breakpoint
 debugger breakpoint add src/main.rs:42 --condition "x > 10"
 
+# Add hit-count breakpoint (break after N hits)
+debugger breakpoint add src/main.rs:42 --hit-count 5
+
 # List breakpoints
 debugger breakpoint list
 
@@ -235,6 +241,29 @@ debugger breakpoint enable <id>
 debugger breakpoint disable <id>
 ```
 
+### Watchpoints (Data Breakpoints)
+
+```bash
+# Watch variable for writes (break when modified)
+debugger watch counter
+debugger watch my_struct.field
+
+# Watch for reads
+debugger watch counter --read
+
+# Watch for any access (read or write)
+debugger watch counter --access
+
+# Watch with condition
+debugger watch counter --condition "counter > 100"
+
+# List active watchpoints
+debugger watch list
+
+# Remove watchpoint
+debugger watch remove <id>
+```
+
 ### Execution Control
 
 ```bash
@@ -242,17 +271,20 @@ debugger breakpoint disable <id>
 debugger continue
 debugger c  # alias
 
-# Step over
+# Step over (execute current line, step over function calls)
 debugger next
 debugger n  # alias
 
-# Step into
+# Step into (execute current line, step into function calls)
 debugger step
 debugger s  # alias
 
-# Step out
+# Step out (run until current function returns)
 debugger finish
 debugger out  # alias
+
+# Step to specific line (run until reaching line)
+debugger until src/main.rs:50
 
 # Pause execution
 debugger pause
@@ -261,54 +293,198 @@ debugger pause
 debugger await [--timeout 60]
 ```
 
-### Inspection
+### Context & Source View
+
+```bash
+# Show current position with source context and variables (THE KEY COMMAND FOR LLMs)
+debugger where
+debugger context  # alias
+
+# Example output:
+# Thread 1 stopped at src/main.rs:42
+#
+#    40 |     let mut sum = 0;
+#    41 |     for i in 0..n {
+# -> 42 |         sum += calculate(i);
+#    43 |     }
+#    44 |     sum
+#
+# Locals:
+# ┌──────────┬─────────┬─────────────────────┐
+# │ Name     │ Type    │ Value               │
+# ├──────────┼─────────┼─────────────────────┤
+# │ n        │ i32     │ 100                 │
+# │ sum      │ i32     │ 4950                │
+# │ i        │ i32     │ 99                  │
+# └──────────┴─────────┴─────────────────────┘
+
+# Show more context lines
+debugger where --context 10
+
+# Show source around a specific location (without stopping there)
+debugger source src/main.rs:30
+debugger list src/main.rs:30  # alias
+debugger source src/main.rs:30 --context 20
+
+# Show source for current function
+debugger source --function
+```
+
+### Stack Navigation
 
 ```bash
 # Get stack trace
 debugger backtrace
 debugger bt  # alias
 
-# List threads
-debugger threads
+# Backtrace with local variables for each frame
+debugger backtrace --locals
 
-# Switch thread
-debugger thread <id>
+# Show only N frames
+debugger backtrace --limit 5
 
-# Get local variables
+# Navigate to specific frame (0 = innermost/current)
+debugger frame 2
+
+# Move up/down the stack
+debugger up      # go to caller
+debugger down    # go back toward current frame
+
+# Show current frame info
+debugger frame
+```
+
+### Variables & Inspection
+
+```bash
+# Get all local variables in current frame
 debugger locals
 
-# Get specific variable
-debugger print <expr>
-debugger p <expr>  # alias
+# Get arguments to current function
+debugger args
 
-# Evaluate expression
-debugger eval "<expression>"
+# Print specific variable or expression
+debugger print counter
+debugger p counter  # alias
+debugger print "my_struct.nested.field"
+debugger print "*ptr"
+debugger print "array[5]"
 
-# Watch expression (data breakpoint)
-debugger watch <expr>
-debugger watch <expr> --read   # break on read
-debugger watch <expr> --write  # break on write (default)
-debugger watch <expr> --access # break on read or write
+# Print with type info
+debugger print counter --type
+
+# Evaluate expression (can have side effects)
+debugger eval "x + y * 2"
+debugger eval "vec.push(42)"  # modifies state
+
+# Set/modify variable value
+debugger set counter 100
+debugger set my_struct.field "new value"
+
+# Show variable in different formats
+debugger print counter --format hex
+debugger print counter --format binary
+debugger print ptr --format address
+```
+
+### Threads
+
+```bash
+# List all threads
+debugger threads
+
+# Example output:
+# ┌────┬─────────────┬──────────┬─────────────────────────┐
+# │ ID │ Name        │ State    │ Location                │
+# ├────┼─────────────┼──────────┼─────────────────────────┤
+# │ 1  │ main        │ stopped  │ src/main.rs:42          │
+# │ 2  │ worker-1    │ running  │ src/worker.rs:15        │
+# │ 3  │ worker-2    │ stopped  │ src/worker.rs:28        │
+# └────┴─────────────┴──────────┴─────────────────────────┘
+
+# Switch to specific thread
+debugger thread 2
+
+# Show current thread info
+debugger thread
+
+# Continue only current thread (others stay stopped)
+debugger continue --thread
 ```
 
 ### Memory & Registers
 
 ```bash
-# Read memory
-debugger memory read <address> [--count 64]
+# Read memory at address
+debugger memory read 0x7ffc12345678
+debugger memory read 0x7ffc12345678 --count 64
+debugger memory read 0x7ffc12345678 --format hex
+
+# Read memory at variable address
+debugger memory read &my_var --count 32
 
 # Read registers
 debugger registers
+
+# Read specific register
+debugger registers rax rsp
 ```
 
-### Output
+### Exception Handling
+
+```bash
+# Break on exceptions/panics
+debugger catch panic
+debugger catch throw      # C++ exceptions
+
+# Break on specific exception type
+debugger catch throw std::runtime_error
+
+# List exception catchpoints
+debugger catch list
+
+# Remove exception catchpoint
+debugger catch remove <id>
+```
+
+### Output & Logging
 
 ```bash
 # Get debuggee stdout/stderr output
 debugger output
 
-# Stream output continuously
+# Stream output continuously (follows)
 debugger output --follow
+
+# Get last N lines of output
+debugger output --tail 50
+
+# Clear output buffer
+debugger output --clear
+```
+
+### Disassembly
+
+```bash
+# Disassemble current function
+debugger disassemble
+
+# Disassemble at address
+debugger disassemble 0x555555554000
+
+# Disassemble N instructions
+debugger disassemble --count 20
+
+# Mixed source and assembly
+debugger disassemble --source
+```
+
+### LLDB/GDB Raw Commands
+
+```bash
+# Send raw command to underlying debugger (escape hatch)
+debugger raw "thread backtrace all"
+debugger raw "memory read --size 4 --count 10 0x1000"
 ```
 
 ## Daemon State Machine
