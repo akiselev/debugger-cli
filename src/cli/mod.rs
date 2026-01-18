@@ -4,11 +4,12 @@
 
 mod spawn;
 
-use crate::commands::{BreakpointCommands, Commands};
+use crate::commands::{BreakpointCommands, Commands, WatchpointCommands};
 use crate::common::{Error, Result};
 use crate::ipc::protocol::{
     BreakpointInfo, BreakpointLocation, Command, ContextResult, EvaluateContext, EvaluateResult,
-    StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo,
+    MemoryReadResult, StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo,
+    WatchpointAccessType, WatchpointInfo,
 };
 use crate::ipc::DaemonClient;
 
@@ -538,6 +539,162 @@ pub async fn dispatch(command: Commands) -> Result<()> {
             println!("Program restarted");
             Ok(())
         }
+
+        Commands::Memory { address, count, offset } => {
+            let mut client = DaemonClient::connect().await?;
+
+            let result = client
+                .send_command(Command::ReadMemory { address: address.clone(), offset, count })
+                .await?;
+
+            let mem: MemoryReadResult = serde_json::from_value(result)?;
+            print_memory_dump(&mem.address, &mem.data);
+
+            Ok(())
+        }
+
+        Commands::Watchpoint(wp_cmd) => match wp_cmd {
+            WatchpointCommands::Add { name, access_type } => {
+                let mut client = DaemonClient::connect().await?;
+                let at = parse_access_type(&access_type)?;
+
+                let result = client
+                    .send_command(Command::WatchpointAdd {
+                        name: name.clone(),
+                        access_type: at,
+                    })
+                    .await?;
+
+                let info: WatchpointInfo = serde_json::from_value(result)?;
+                print_watchpoint_added(&info);
+
+                Ok(())
+            }
+
+            WatchpointCommands::Remove { id } => {
+                let mut client = DaemonClient::connect().await?;
+                client
+                    .send_command(Command::WatchpointRemove { id })
+                    .await?;
+                println!("Watchpoint {} removed", id);
+                Ok(())
+            }
+
+            WatchpointCommands::List => {
+                let mut client = DaemonClient::connect().await?;
+
+                let result = client.send_command(Command::WatchpointList).await?;
+                let watchpoints: Vec<WatchpointInfo> =
+                    serde_json::from_value(result["watchpoints"].clone())?;
+
+                if watchpoints.is_empty() {
+                    println!("No watchpoints set");
+                } else {
+                    println!("Watchpoints:");
+                    for wp in &watchpoints {
+                        print_watchpoint(wp);
+                    }
+                }
+
+                Ok(())
+            }
+        },
+    }
+}
+
+fn parse_access_type(s: &str) -> Result<WatchpointAccessType> {
+    match s.to_lowercase().as_str() {
+        "read" | "r" => Ok(WatchpointAccessType::Read),
+        "write" | "w" => Ok(WatchpointAccessType::Write),
+        "readwrite" | "read-write" | "rw" => Ok(WatchpointAccessType::ReadWrite),
+        _ => Err(Error::InvalidLocation(format!(
+            "Invalid access type '{}'. Use: read, write, or readWrite",
+            s
+        ))),
+    }
+}
+
+fn print_memory_dump(address: &str, data: &[u8]) {
+    // Parse address to get a starting value
+    let base_addr = u64::from_str_radix(address.trim_start_matches("0x"), 16).unwrap_or(0);
+
+    if data.is_empty() {
+        println!("No data read");
+        return;
+    }
+
+    // Print in hexdump format: address, hex bytes, ASCII
+    for (i, chunk) in data.chunks(16).enumerate() {
+        let addr = base_addr + (i * 16) as u64;
+
+        // Address
+        print!("{:08x}  ", addr);
+
+        // Hex bytes
+        for (j, byte) in chunk.iter().enumerate() {
+            print!("{:02x} ", byte);
+            if j == 7 {
+                print!(" ");
+            }
+        }
+
+        // Padding for incomplete lines
+        for j in chunk.len()..16 {
+            print!("   ");
+            if j == 7 {
+                print!(" ");
+            }
+        }
+
+        // ASCII representation
+        print!(" |");
+        for byte in chunk {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                print!("{}", *byte as char);
+            } else {
+                print!(".");
+            }
+        }
+        println!("|");
+    }
+
+    println!("{} bytes read", data.len());
+}
+
+fn print_watchpoint_added(info: &WatchpointInfo) {
+    if info.verified {
+        let access_str = match info.access_type {
+            WatchpointAccessType::Read => "read",
+            WatchpointAccessType::Write => "write",
+            WatchpointAccessType::ReadWrite => "read/write",
+        };
+        println!("Watchpoint {} set on '{}' ({})", info.id, info.name, access_str);
+    } else {
+        println!(
+            "Watchpoint {} pending{}",
+            info.id,
+            info.message.as_ref().map(|m| format!(": {}", m)).unwrap_or_default()
+        );
+    }
+}
+
+fn print_watchpoint(info: &WatchpointInfo) {
+    let status = if info.enabled {
+        if info.verified { "✓" } else { "?" }
+    } else {
+        "○"
+    };
+
+    let access_str = match info.access_type {
+        WatchpointAccessType::Read => "read",
+        WatchpointAccessType::Write => "write",
+        WatchpointAccessType::ReadWrite => "read/write",
+    };
+
+    if let Some(msg) = &info.message {
+        println!("  {} {} {} ({}) - {}", status, info.id, info.name, access_str, msg);
+    } else {
+        println!("  {} {} {} ({})", status, info.id, info.name, access_str);
     }
 }
 

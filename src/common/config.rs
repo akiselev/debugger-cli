@@ -31,6 +31,21 @@ pub struct Config {
     pub output: OutputConfig,
 }
 
+/// Adapter type for specialized launch argument handling
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AdapterType {
+    /// lldb-dap (LLVM debugger)
+    #[default]
+    LldbDap,
+    /// debugpy (Python debugger)
+    Debugpy,
+    /// CodeLLDB (VSCode extension)
+    Codelldb,
+    /// Generic DAP adapter (no special handling)
+    Generic,
+}
+
 /// Configuration for a debug adapter
 #[derive(Debug, Deserialize, Clone)]
 pub struct AdapterConfig {
@@ -40,6 +55,10 @@ pub struct AdapterConfig {
     /// Additional arguments to pass to the adapter
     #[serde(default)]
     pub args: Vec<String>,
+
+    /// Adapter type for specialized handling
+    #[serde(default)]
+    pub adapter_type: AdapterType,
 }
 
 /// Default settings
@@ -176,9 +195,19 @@ impl Config {
         }
 
         // Try to find in PATH
-        which::which(name).ok().map(|path| AdapterConfig {
-            path,
-            args: Vec::new(),
+        which::which(name).ok().map(|path| {
+            // Infer adapter type from name
+            let adapter_type = match name {
+                "lldb-dap" | "lldb-vscode" => AdapterType::LldbDap,
+                "debugpy" | "debugpy-adapter" => AdapterType::Debugpy,
+                "codelldb" => AdapterType::Codelldb,
+                _ => AdapterType::Generic,
+            };
+            AdapterConfig {
+                path,
+                args: Vec::new(),
+                adapter_type,
+            }
         })
     }
 }

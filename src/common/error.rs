@@ -71,6 +71,14 @@ pub enum Error {
     #[error("Failed to set breakpoint at {location}: {reason}")]
     BreakpointFailed { location: String, reason: String },
 
+    // === Watchpoint Errors ===
+    #[error("Watchpoint {id} not found")]
+    WatchpointNotFound { id: u32 },
+
+    // === Feature Support Errors ===
+    #[error("Feature not supported: {0}")]
+    NotSupported(String),
+
     // === Execution Errors ===
     #[error("Cannot {action} while program is {state}")]
     InvalidState { action: String, state: String },
@@ -161,6 +169,8 @@ impl From<&Error> for IpcError {
             Error::AdapterNotFound { .. } => "ADAPTER_NOT_FOUND",
             Error::InvalidLocation(_) => "INVALID_LOCATION",
             Error::BreakpointNotFound { .. } => "BREAKPOINT_NOT_FOUND",
+            Error::WatchpointNotFound { .. } => "WATCHPOINT_NOT_FOUND",
+            Error::NotSupported(_) => "NOT_SUPPORTED",
             Error::InvalidState { .. } => "INVALID_STATE",
             Error::ThreadNotFound(_) => "THREAD_NOT_FOUND",
             Error::FrameNotFound(_) => "FRAME_NOT_FOUND",

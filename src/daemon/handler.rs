@@ -148,18 +148,15 @@ async fn handle_command_inner(
         }
 
         Command::BreakpointEnable { id } => {
-            // TODO: Implement enable/disable
-            Err(Error::Internal(format!(
-                "Enable breakpoint {} not yet implemented",
-                id
-            )))
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            let info = sess.enable_breakpoint(id).await?;
+            Ok(serde_json::to_value(info)?)
         }
 
         Command::BreakpointDisable { id } => {
-            Err(Error::Internal(format!(
-                "Disable breakpoint {} not yet implemented",
-                id
-            )))
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            let info = sess.disable_breakpoint(id).await?;
+            Ok(serde_json::to_value(info)?)
         }
 
         // === Execution Control ===
@@ -412,6 +409,32 @@ async fn handle_command_inner(
         Command::SubscribeOutput => {
             // TODO: Implement output streaming
             Err(Error::Internal("Output streaming not yet implemented".to_string()))
+        }
+
+        // === Memory ===
+        Command::ReadMemory { address, offset, count } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            let result = sess.read_memory(&address, offset, count).await?;
+            Ok(serde_json::to_value(result)?)
+        }
+
+        // === Watchpoints ===
+        Command::WatchpointAdd { name, access_type } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            let info = sess.add_watchpoint(&name, access_type).await?;
+            Ok(serde_json::to_value(info)?)
+        }
+
+        Command::WatchpointRemove { id } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            sess.remove_watchpoint(id).await?;
+            Ok(json!({ "removed": id }))
+        }
+
+        Command::WatchpointList => {
+            let sess = session.as_ref().ok_or(Error::SessionNotActive)?;
+            let watchpoints = sess.list_watchpoints();
+            Ok(json!({ "watchpoints": watchpoints }))
         }
 
         // === Shutdown ===

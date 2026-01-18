@@ -8,12 +8,15 @@ use std::path::{Path, PathBuf};
 
 use tokio::sync::mpsc;
 
-use crate::common::{config::Config, Error, Result};
+use crate::common::{config::{AdapterType, Config}, Error, Result};
 use crate::dap::{
     self, Breakpoint, Capabilities, DapClient, Event, FunctionBreakpoint, LaunchArguments,
     AttachArguments, Scope, SourceBreakpoint, StackFrame, Thread, Variable,
 };
-use crate::ipc::protocol::{BreakpointInfo, BreakpointLocation};
+use crate::dap::DataBreakpointAccessType;
+use crate::ipc::protocol::{
+    BreakpointInfo, BreakpointLocation, MemoryReadResult, WatchpointAccessType, WatchpointInfo,
+};
 
 /// Debug session state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +64,18 @@ struct StoredBreakpoint {
     message: Option<String>,
 }
 
+/// Stored watchpoint information
+#[derive(Debug, Clone)]
+struct StoredWatchpoint {
+    id: u32,
+    name: String,
+    data_id: String,
+    access_type: WatchpointAccessType,
+    enabled: bool,
+    verified: bool,
+    message: Option<String>,
+}
+
 /// Output event for buffering
 #[derive(Debug, Clone)]
 pub struct OutputEvent {
@@ -91,8 +106,12 @@ pub struct DebugSession {
     source_breakpoints: HashMap<PathBuf, Vec<StoredBreakpoint>>,
     /// Function breakpoints
     function_breakpoints: Vec<StoredBreakpoint>,
+    /// Watchpoints (data breakpoints)
+    watchpoints: Vec<StoredWatchpoint>,
     /// Next breakpoint ID
     next_bp_id: u32,
+    /// Next watchpoint ID
+    next_wp_id: u32,
     /// Cached threads
     threads: Vec<Thread>,
     /// Currently stopped thread
@@ -143,17 +162,16 @@ impl DebugSession {
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
 
-        client
-            .launch(LaunchArguments {
-                program: program.to_string_lossy().into_owned(),
-                args: args.clone(),
-                cwd,
-                env: None,
-                stop_on_entry,
-                init_commands: None,
-                pre_run_commands: None,
-            })
-            .await?;
+        // Build adapter-specific launch arguments
+        let launch_args = Self::build_launch_args(
+            &adapter_config.adapter_type,
+            program,
+            &args,
+            cwd,
+            stop_on_entry,
+        );
+
+        client.launch(launch_args).await?;
 
         // Wait for initialized event (comes after launch per DAP spec)
         client.wait_initialized().await?;
@@ -178,7 +196,9 @@ impl DebugSession {
             launched: true,
             source_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
+            watchpoints: Vec::new(),
             next_bp_id: 1,
+            next_wp_id: 1,
             threads: Vec::new(),
             stopped_thread: None,
             stopped_reason: None,
@@ -237,7 +257,9 @@ impl DebugSession {
             launched: false,
             source_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
+            watchpoints: Vec::new(),
             next_bp_id: 1,
+            next_wp_id: 1,
             threads: Vec::new(),
             stopped_thread: None,
             stopped_reason: Some("attach".to_string()),
@@ -588,6 +610,43 @@ impl DebugSession {
         Err(Error::BreakpointNotFound { id })
     }
 
+    /// Enable a breakpoint
+    pub async fn enable_breakpoint(&mut self, id: u32) -> Result<BreakpointInfo> {
+        self.set_breakpoint_enabled(id, true).await
+    }
+
+    /// Disable a breakpoint
+    pub async fn disable_breakpoint(&mut self, id: u32) -> Result<BreakpointInfo> {
+        self.set_breakpoint_enabled(id, false).await
+    }
+
+    /// Set breakpoint enabled state
+    async fn set_breakpoint_enabled(&mut self, id: u32, enabled: bool) -> Result<BreakpointInfo> {
+        // Find the breakpoint in source breakpoints
+        for (file, bps) in &mut self.source_breakpoints {
+            if let Some(bp) = bps.iter_mut().find(|bp| bp.id == id) {
+                bp.enabled = enabled;
+                // Resend all breakpoints for this file to the adapter
+                let file_clone = file.clone();
+                let source_bps = self.collect_source_breakpoints(&file_clone);
+                let results = self.client.set_breakpoints(&file_clone, source_bps).await?;
+                self.update_source_breakpoint_status(&file_clone, &results);
+                return self.get_breakpoint_info(id);
+            }
+        }
+
+        // Check function breakpoints
+        if let Some(bp) = self.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
+            bp.enabled = enabled;
+            let func_bps = self.collect_function_breakpoints();
+            let results = self.client.set_function_breakpoints(func_bps).await?;
+            self.update_function_breakpoint_status(&results);
+            return self.get_breakpoint_info(id);
+        }
+
+        Err(Error::BreakpointNotFound { id })
+    }
+
     /// Remove all breakpoints
     pub async fn remove_all_breakpoints(&mut self) -> Result<()> {
         // Clear source breakpoints
@@ -824,6 +883,234 @@ impl DebugSession {
         self.client.disconnect(self.launched).await?;
         self.client.terminate().await?;
         Ok(())
+    }
+
+    /// Read memory at the given address
+    pub async fn read_memory(
+        &mut self,
+        address: &str,
+        offset: Option<i64>,
+        count: u64,
+    ) -> Result<MemoryReadResult> {
+        self.ensure_stopped()?;
+
+        // Check if adapter supports memory read
+        if !self.capabilities.supports_read_memory_request {
+            return Err(Error::NotSupported(
+                "Memory read is not supported by this adapter".to_string(),
+            ));
+        }
+
+        let response = self.client.read_memory(address, offset, count).await?;
+
+        // Decode base64 data
+        let data = if let Some(b64_data) = response.data {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            STANDARD.decode(&b64_data).map_err(|e| {
+                Error::Internal(format!("Failed to decode memory data: {}", e))
+            })?
+        } else {
+            Vec::new()
+        };
+
+        Ok(MemoryReadResult {
+            address: response.address,
+            bytes_read: data.len(),
+            data,
+        })
+    }
+
+    /// Add a watchpoint (data breakpoint)
+    pub async fn add_watchpoint(
+        &mut self,
+        name: &str,
+        access_type: WatchpointAccessType,
+    ) -> Result<WatchpointInfo> {
+        self.ensure_stopped()?;
+
+        // Check if adapter supports data breakpoints
+        if !self.capabilities.supports_data_breakpoints {
+            return Err(Error::NotSupported(
+                "Data breakpoints (watchpoints) are not supported by this adapter".to_string(),
+            ));
+        }
+
+        // Get data breakpoint info for the variable
+        let info = self.client.data_breakpoint_info(Some(name), None, self.current_frame).await?;
+
+        let data_id = info.data_id.ok_or_else(|| {
+            Error::InvalidLocation(format!(
+                "Cannot watch '{}': {}",
+                name, info.description
+            ))
+        })?;
+
+        let wp_id = self.next_wp_id;
+        self.next_wp_id += 1;
+
+        // Store the watchpoint
+        let stored = StoredWatchpoint {
+            id: wp_id,
+            name: name.to_string(),
+            data_id: data_id.clone(),
+            access_type,
+            enabled: true,
+            verified: false,
+            message: None,
+        };
+        self.watchpoints.push(stored);
+
+        // Send all watchpoints to adapter
+        let data_bps = self.collect_data_breakpoints();
+        let results = self.client.set_data_breakpoints(data_bps).await?;
+
+        // Update verification status
+        self.update_watchpoint_status(&results);
+
+        self.get_watchpoint_info(wp_id)
+    }
+
+    /// Remove a watchpoint
+    pub async fn remove_watchpoint(&mut self, id: u32) -> Result<()> {
+        let pos = self.watchpoints.iter().position(|wp| wp.id == id)
+            .ok_or(Error::WatchpointNotFound { id })?;
+
+        self.watchpoints.remove(pos);
+
+        // Send updated watchpoints to adapter
+        let data_bps = self.collect_data_breakpoints();
+        self.client.set_data_breakpoints(data_bps).await?;
+
+        Ok(())
+    }
+
+    /// List all watchpoints
+    pub fn list_watchpoints(&self) -> Vec<WatchpointInfo> {
+        self.watchpoints
+            .iter()
+            .map(|wp| WatchpointInfo {
+                id: wp.id,
+                verified: wp.verified,
+                name: wp.name.clone(),
+                access_type: wp.access_type,
+                message: wp.message.clone(),
+                enabled: wp.enabled,
+            })
+            .collect()
+    }
+
+    /// Collect data breakpoints to send to adapter
+    fn collect_data_breakpoints(&self) -> Vec<dap::DataBreakpoint> {
+        self.watchpoints
+            .iter()
+            .filter(|wp| wp.enabled)
+            .map(|wp| {
+                let access_type = match wp.access_type {
+                    WatchpointAccessType::Read => DataBreakpointAccessType::Read,
+                    WatchpointAccessType::Write => DataBreakpointAccessType::Write,
+                    WatchpointAccessType::ReadWrite => DataBreakpointAccessType::ReadWrite,
+                };
+                dap::DataBreakpoint {
+                    data_id: wp.data_id.clone(),
+                    access_type: Some(access_type),
+                    condition: None,
+                    hit_condition: None,
+                }
+            })
+            .collect()
+    }
+
+    /// Update watchpoint status from adapter response
+    fn update_watchpoint_status(&mut self, results: &[dap::Breakpoint]) {
+        for (wp, result) in self.watchpoints.iter_mut().zip(results.iter()) {
+            wp.verified = result.verified;
+            wp.message = result.message.clone();
+        }
+    }
+
+    /// Get watchpoint info by ID
+    fn get_watchpoint_info(&self, id: u32) -> Result<WatchpointInfo> {
+        self.watchpoints
+            .iter()
+            .find(|wp| wp.id == id)
+            .map(|wp| WatchpointInfo {
+                id: wp.id,
+                verified: wp.verified,
+                name: wp.name.clone(),
+                access_type: wp.access_type,
+                message: wp.message.clone(),
+                enabled: wp.enabled,
+            })
+            .ok_or(Error::WatchpointNotFound { id })
+    }
+
+    /// Build adapter-specific launch arguments
+    fn build_launch_args(
+        adapter_type: &AdapterType,
+        program: &Path,
+        args: &[String],
+        cwd: Option<String>,
+        stop_on_entry: bool,
+    ) -> LaunchArguments {
+        let program_str = program.to_string_lossy().into_owned();
+
+        match adapter_type {
+            AdapterType::Debugpy => {
+                // debugpy expects "program" to be the Python script
+                // It uses "python" for the interpreter path (optional, defaults to sys.executable)
+                LaunchArguments {
+                    program: program_str,
+                    args: args.to_vec(),
+                    cwd,
+                    env: None,
+                    stop_on_entry,
+                    // lldb-dap specific (not used)
+                    init_commands: None,
+                    pre_run_commands: None,
+                    // debugpy specific
+                    python: None, // Use debugpy's default Python
+                    module: None, // Running a script, not a module
+                    just_my_code: Some(true), // Default: only step through user code
+                    redirect_output: Some(true), // Capture stdout/stderr
+                    console: Some("internalConsole".to_string()),
+                }
+            }
+            AdapterType::LldbDap | AdapterType::Codelldb => {
+                // lldb-dap and codelldb use similar launch arguments
+                LaunchArguments {
+                    program: program_str,
+                    args: args.to_vec(),
+                    cwd,
+                    env: None,
+                    stop_on_entry,
+                    init_commands: None,
+                    pre_run_commands: None,
+                    // debugpy specific (not used)
+                    python: None,
+                    module: None,
+                    just_my_code: None,
+                    redirect_output: None,
+                    console: None,
+                }
+            }
+            AdapterType::Generic => {
+                // Generic: minimal launch arguments
+                LaunchArguments {
+                    program: program_str,
+                    args: args.to_vec(),
+                    cwd,
+                    env: None,
+                    stop_on_entry,
+                    init_commands: None,
+                    pre_run_commands: None,
+                    python: None,
+                    module: None,
+                    just_my_code: None,
+                    redirect_output: None,
+                    console: None,
+                }
+            }
+        }
     }
 
     /// Ensure we're in stopped state for inspection commands

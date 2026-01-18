@@ -185,6 +185,32 @@ pub enum Command {
     /// Subscribe to output events (for --follow)
     SubscribeOutput,
 
+    // === Memory ===
+    /// Read memory
+    ReadMemory {
+        /// Memory reference (address as hex string like "0x7fff1234")
+        address: String,
+        /// Optional offset from address
+        offset: Option<i64>,
+        /// Number of bytes to read
+        count: u64,
+    },
+
+    // === Watchpoints ===
+    /// Add a watchpoint (data breakpoint)
+    WatchpointAdd {
+        /// Variable name or expression to watch
+        name: String,
+        /// Access type: read, write, or readWrite
+        access_type: WatchpointAccessType,
+    },
+
+    /// Remove a watchpoint
+    WatchpointRemove { id: u32 },
+
+    /// List all watchpoints
+    WatchpointList,
+
     // === Shutdown ===
     /// Shutdown the daemon
     Shutdown,
@@ -251,6 +277,19 @@ pub enum EvaluateContext {
     Repl,
     /// Hover evaluation
     Hover,
+}
+
+/// Watchpoint access type
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchpointAccessType {
+    /// Trigger on reads
+    Read,
+    /// Trigger on writes
+    #[default]
+    Write,
+    /// Trigger on both reads and writes
+    ReadWrite,
 }
 
 // === Result types for responses ===
@@ -349,6 +388,28 @@ pub struct SourceLine {
     pub number: u32,
     pub content: String,
     pub is_current: bool,
+}
+
+/// Memory read result
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MemoryReadResult {
+    /// Starting address
+    pub address: String,
+    /// Bytes read (hex string)
+    pub data: Vec<u8>,
+    /// Number of bytes actually read
+    pub bytes_read: usize,
+}
+
+/// Watchpoint information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchpointInfo {
+    pub id: u32,
+    pub verified: bool,
+    pub name: String,
+    pub access_type: WatchpointAccessType,
+    pub message: Option<String>,
+    pub enabled: bool,
 }
 
 #[cfg(test)]

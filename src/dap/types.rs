@@ -113,6 +113,7 @@ impl Default for InitializeArguments {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchArguments {
+    /// Program to debug (path to executable or script)
     pub program: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
@@ -122,11 +123,29 @@ pub struct LaunchArguments {
     pub env: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     pub stop_on_entry: bool,
+
     // lldb-dap specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub init_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_run_commands: Option<Vec<String>>,
+
+    // debugpy specific
+    /// Python interpreter path (debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
+    /// Module to run instead of program (debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    /// Only debug user code (debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub just_my_code: Option<bool>,
+    /// Redirect stdout/stderr (debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_output: Option<bool>,
+    /// Console type: internalConsole, integratedTerminal (debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub console: Option<String>,
 }
 
 /// Attach request arguments
@@ -230,6 +249,73 @@ pub struct DisconnectArguments {
     pub terminate_debuggee: Option<bool>,
 }
 
+/// ReadMemory request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadMemoryArguments {
+    /// Memory reference to read from (usually from a variable's memoryReference)
+    pub memory_reference: String,
+    /// Optional offset from the memory reference
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
+    /// Number of bytes to read
+    pub count: u64,
+}
+
+/// DataBreakpointInfo request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataBreakpointInfoArguments {
+    /// Variable name or expression
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Variables reference (for scoped variables)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variables_reference: Option<i64>,
+    /// Frame ID for evaluating the expression
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<i64>,
+}
+
+/// Data breakpoint access type
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DataBreakpointAccessType {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl Default for DataBreakpointAccessType {
+    fn default() -> Self {
+        Self::Write
+    }
+}
+
+/// Data breakpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataBreakpoint {
+    /// ID returned from dataBreakpointInfo
+    pub data_id: String,
+    /// Access type
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_type: Option<DataBreakpointAccessType>,
+    /// Optional condition
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    /// Optional hit condition
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_condition: Option<String>,
+}
+
+/// SetDataBreakpoints request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDataBreakpointsArguments {
+    pub breakpoints: Vec<DataBreakpoint>,
+}
+
 // === Response Bodies ===
 
 /// Capabilities returned by initialize response
@@ -320,6 +406,42 @@ pub struct EvaluateResponseBody {
 pub struct ContinueResponseBody {
     #[serde(default = "default_true")]
     pub all_threads_continued: bool,
+}
+
+/// ReadMemory response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadMemoryResponseBody {
+    /// The address of the first byte read (may differ from requested)
+    pub address: String,
+    /// Number of unreadable bytes at the start
+    #[serde(default)]
+    pub unreadable_bytes: Option<u64>,
+    /// Base64-encoded bytes read
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+/// DataBreakpointInfo response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataBreakpointInfoResponseBody {
+    /// Data ID to use in setDataBreakpoints (null if not available)
+    pub data_id: Option<String>,
+    /// Description of the data
+    pub description: String,
+    /// Possible access types
+    #[serde(default)]
+    pub access_types: Vec<DataBreakpointAccessType>,
+    /// Can the breakpoint persist across sessions?
+    #[serde(default)]
+    pub can_persist: bool,
+}
+
+/// SetDataBreakpoints response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetDataBreakpointsResponseBody {
+    pub breakpoints: Vec<Breakpoint>,
 }
 
 // === Common Types ===

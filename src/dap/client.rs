@@ -427,6 +427,60 @@ impl DapClient {
             .await
     }
 
+    /// Read memory
+    pub async fn read_memory(
+        &mut self,
+        memory_reference: &str,
+        offset: Option<i64>,
+        count: u64,
+    ) -> Result<ReadMemoryResponseBody> {
+        let args = ReadMemoryArguments {
+            memory_reference: memory_reference.to_string(),
+            offset,
+            count,
+        };
+
+        self.request("readMemory", Some(serde_json::to_value(&args)?))
+            .await
+    }
+
+    /// Get data breakpoint info for a variable
+    pub async fn data_breakpoint_info(
+        &mut self,
+        name: Option<&str>,
+        variables_reference: Option<i64>,
+        frame_id: Option<i64>,
+    ) -> Result<DataBreakpointInfoResponseBody> {
+        let args = DataBreakpointInfoArguments {
+            name: name.map(String::from),
+            variables_reference,
+            frame_id,
+        };
+
+        self.request(
+            "dataBreakpointInfo",
+            Some(serde_json::to_value(&args)?),
+        )
+        .await
+    }
+
+    /// Set data breakpoints (watchpoints)
+    pub async fn set_data_breakpoints(
+        &mut self,
+        breakpoints: Vec<DataBreakpoint>,
+    ) -> Result<Vec<Breakpoint>> {
+        let args = SetDataBreakpointsArguments { breakpoints };
+
+        let response: SetDataBreakpointsResponseBody = self
+            .request(
+                "setDataBreakpoints",
+                Some(serde_json::to_value(&args)?),
+            )
+            .await?;
+
+        Ok(response.breakpoints)
+    }
+
     /// Disconnect from the debug adapter
     pub async fn disconnect(&mut self, terminate_debuggee: bool) -> Result<()> {
         let args = DisconnectArguments {

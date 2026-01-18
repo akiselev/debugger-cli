@@ -160,9 +160,51 @@ pub enum Commands {
     /// Restart program (re-launch with same arguments)
     Restart,
 
+    /// Read memory at address
+    #[command(alias = "x")]
+    Memory {
+        /// Memory address (hex, e.g., 0x7fff1234)
+        address: String,
+
+        /// Number of bytes to read
+        #[arg(long, short, default_value = "64")]
+        count: u64,
+
+        /// Offset from address
+        #[arg(long)]
+        offset: Option<i64>,
+    },
+
+    /// Watchpoint management (data breakpoints)
+    #[command(subcommand, alias = "watch")]
+    Watchpoint(WatchpointCommands),
+
     /// [Hidden] Run in daemon mode - spawned automatically
     #[command(hide = true)]
     Daemon,
+}
+
+/// Watchpoint subcommands
+#[derive(Subcommand)]
+pub enum WatchpointCommands {
+    /// Add a watchpoint on a variable
+    Add {
+        /// Variable name or expression to watch
+        name: String,
+
+        /// Access type: read, write, or read-write
+        #[arg(long, short = 't', default_value = "write")]
+        access_type: String,
+    },
+
+    /// Remove a watchpoint
+    Remove {
+        /// Watchpoint ID to remove
+        id: u32,
+    },
+
+    /// List all watchpoints
+    List,
 }
 
 #[derive(Subcommand)]
