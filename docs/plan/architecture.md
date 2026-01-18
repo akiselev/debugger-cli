@@ -146,8 +146,12 @@ Client                              Adapter
 
 ### Transport
 
+Platform-specific IPC transports (selected at compile time via `#[cfg]`):
+
 - **Unix/macOS**: Unix domain sockets at `$XDG_RUNTIME_DIR/debugger-cli/daemon.sock` or `/tmp/debugger-cli-<uid>/daemon.sock`
-- **Windows**: Named pipes at `\\.\pipe\debugger-cli-<username>`
+- **Windows**: Named pipes at `\\.\pipe\debugger-cli-<username>` (completely different transport, not Unix sockets)
+
+The `interprocess` crate's `local_socket` module abstracts this difference, but `paths.rs` must use platform-specific logic to determine the correct path/name.
 
 ### Message Format
 
@@ -297,8 +301,8 @@ debugger await [--timeout 60]
 
 ```bash
 # Show current position with source context and variables (THE KEY COMMAND FOR LLMs)
-debugger where
-debugger context  # alias
+debugger context
+debugger where    # alias (note: unrelated to Rust's 'where' keyword; follows GDB/LLDB convention)
 
 # Example output:
 # Thread 1 stopped at src/main.rs:42
@@ -647,8 +651,11 @@ adapter = "lldb-dap"
 
 ## Security Considerations
 
-1. **IPC Socket Permissions**: Restrict socket/pipe to current user only (0700 directory, 0600 socket)
-2. **Adapter Validation**: Validate adapter binary exists and is executable
+1. **IPC Socket/Pipe Permissions**:
+   - **Unix/macOS**: Create socket directory with mode `0700` and socket with mode `0600`, ensuring only the owning user can access
+   - **Windows**: Create named pipe with a security descriptor (DACL) that restricts access to the current user. When using `interprocess` or raw Win32 APIs, set `SECURITY_ATTRIBUTES` with an owner-only ACL rather than relying on default permissions
+
+2. **Adapter Validation**: Validate adapter binary exists and is executable before spawning
 3. **No Arbitrary Code Execution**: Only allow debugger commands, not shell injection
 
 ## Testing Strategy

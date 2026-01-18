@@ -90,6 +90,9 @@ pub enum Error {
     #[error("Daemon not running. Start a session with 'debugger start <program>'")]
     DaemonNotRunning,
 
+    #[error("Failed to spawn daemon: timed out waiting for socket")]
+    DaemonSpawnTimeout,
+
     #[error("Failed to connect to daemon: {0}")]
     DaemonConnectionFailed(#[from] std::io::Error),
 
@@ -104,6 +107,9 @@ pub enum Error {
 
     #[error("Protocol error: {0}")]
     Protocol(String),
+
+    #[error("Invalid breakpoint location: {0}")]
+    InvalidLocation(String),
 }
 ```
 
@@ -181,8 +187,8 @@ pub struct DebugSession {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     state: SessionState,
-    seq: AtomicI64,           // DAP sequence counter
-    pending_requests: HashMap<i64, oneshot::Sender<Response>>,
+    seq: AtomicU64,           // DAP sequence counter (u64 for cross-platform atomicity)
+    pending_requests: HashMap<u64, oneshot::Sender<Response>>,
     breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
     threads: Vec<Thread>,
     stopped_thread: Option<i64>,
@@ -211,7 +217,7 @@ impl DebugSession {
 pub struct DapConnection {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    seq: i64,
+    seq: u64,
 }
 
 impl DapConnection {
@@ -225,23 +231,26 @@ impl DapConnection {
     }
 
     pub async fn read_message(&mut self) -> Result<ProtocolMessage> {
-        // Read Content-Length header
-        let mut header = String::new();
+        // Read headers line by line (more efficient than byte-by-byte)
+        let mut content_length: Option<usize> = None;
         loop {
-            let mut byte = [0u8; 1];
-            self.stdout.read_exact(&mut byte).await?;
-            header.push(byte[0] as char);
-            if header.ends_with("\r\n\r\n") {
-                break;
+            let mut line = String::new();
+            self.stdout.read_line(&mut line).await?;
+
+            if line == "\r\n" {
+                break; // Empty line signals end of headers
+            }
+
+            if let Some(value) = line.strip_prefix("Content-Length: ") {
+                content_length = Some(
+                    value.trim().parse::<usize>()
+                        .map_err(|e| Error::Protocol(format!("invalid Content-Length: {e}")))?
+                );
             }
         }
 
-        // Parse content length
-        let len: usize = header
-            .lines()
-            .find_map(|l| l.strip_prefix("Content-Length: "))
-            .ok_or(Error::Protocol("missing Content-Length"))?
-            .parse()?;
+        let len = content_length
+            .ok_or_else(|| Error::Protocol("missing Content-Length header".to_string()))?;
 
         // Read JSON body
         let mut body = vec![0u8; len];
@@ -532,14 +541,24 @@ pub async fn add(location: &str, condition: Option<String>) -> Result<()> {
 }
 
 fn parse_location(s: &str) -> Result<BreakpointLocation> {
-    if let Some((file, line)) = s.rsplit_once(':') {
-        Ok(BreakpointLocation::Line {
-            file: PathBuf::from(file),
-            line: line.parse()?,
-        })
-    } else {
-        Ok(BreakpointLocation::Function { name: s.to_string() })
+    // Handle file:line format, being careful with Windows paths like "C:\path\file.rs:10"
+    // Strategy: find the last ':' that's followed by digits only
+    if let Some(colon_idx) = s.rfind(':') {
+        let (file_part, line_part) = s.split_at(colon_idx);
+        let line_str = &line_part[1..]; // Skip the ':'
+
+        // Only treat as file:line if the part after ':' is a valid line number
+        if !line_str.is_empty() && line_str.chars().all(|c| c.is_ascii_digit()) {
+            let line: u32 = line_str.parse()
+                .map_err(|_| Error::InvalidLocation(format!("invalid line number: {}", line_str)))?;
+            return Ok(BreakpointLocation::Line {
+                file: PathBuf::from(file_part),
+                line,
+            });
+        }
     }
+    // No valid file:line pattern, treat as function name
+    Ok(BreakpointLocation::Function { name: s.to_string() })
 }
 ```
 
@@ -638,13 +657,18 @@ pub async fn add(expression: &str, access_type: AccessType) -> Result<()> {
     }).await?;
 
     // Then set data breakpoint
+    let data_id = eval.get("result")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::Protocol("missing 'result' in evaluate response".to_string()))?;
+
     let result = client.send_command(Command::DataBreakpointAdd {
-        data_id: eval["result"].as_str().unwrap().to_string(),
+        data_id: data_id.to_string(),
         access_type,
         condition: None,
     }).await?;
 
-    println!("Watch {} set on {}", result["id"], expression);
+    let watch_result: WatchResult = serde_json::from_value(result)?;
+    println!("Watch {} set on {}", watch_result.id, expression);
     Ok(())
 }
 ```
@@ -678,7 +702,10 @@ pub async fn stream(follow: bool) -> Result<()> {
         }
     } else {
         let result = client.send_command(Command::GetOutput).await?;
-        print!("{}", result["output"]);
+        // Safely extract output field with proper error handling
+        if let Some(output) = result.get("output").and_then(|v| v.as_str()) {
+            print!("{}", output);
+        }
     }
 
     Ok(())
@@ -750,8 +777,8 @@ async fn test_basic_debug_session() {
     let stop = client.await_stop(10).await.unwrap();
     assert_eq!(stop.reason, "breakpoint");
 
-    let bt = client.backtrace().await.unwrap();
-    assert!(!bt.is_empty());
+    let stack_frames = client.backtrace().await.unwrap();
+    assert!(!stack_frames.is_empty());
 
     client.stop().await.unwrap();
 }

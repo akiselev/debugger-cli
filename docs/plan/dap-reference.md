@@ -14,7 +14,7 @@ Example:
 ```
 Content-Length: 119\r\n
 \r\n
-{"seq":1,"type":"request","command":"initialize","arguments":{"clientID":"debugger-cli","adapterID":"lldb-dap"}}
+{"seq":1,"type":"request","command":"initialize","arguments":{"clientId":"debugger-cli","adapterId":"lldb-dap"}}
 ```
 
 ## Message Structure
@@ -91,9 +91,9 @@ Content-Length: 119\r\n
 {
   "command": "initialize",
   "arguments": {
-    "clientID": "debugger-cli",
+    "clientId": "debugger-cli",
     "clientName": "LLM Debugger CLI",
-    "adapterID": "lldb-dap",
+    "adapterId": "lldb-dap",
     "linesStartAt1": true,
     "columnsStartAt1": true,
     "pathFormat": "path",
