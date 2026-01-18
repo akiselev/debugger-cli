@@ -533,6 +533,135 @@ debugger raw "memory read --size 4 --count 10 0x1000"
      └─────────────────┘
 ```
 
+## Daemon Lifecycle & Session Management
+
+### Single Session Design
+
+The daemon supports **one debug session at a time**. This simplifies:
+- State management (no session isolation needed)
+- Resource usage (single DAP adapter process)
+- CLI commands (no session selection required)
+
+To debug multiple programs simultaneously, run separate daemon instances (future enhancement).
+
+### Daemon Lifecycle
+
+```
+1. First CLI command runs (e.g., `debugger start ./app`)
+2. CLI checks for existing daemon socket
+3. If no daemon: CLI spawns `debugger daemon` in background
+4. Daemon creates IPC socket and waits for connections
+5. CLI connects and sends command
+6. Daemon processes commands until `stop` or session ends
+7. Daemon remains running (IDLE state) for potential new sessions
+8. Daemon auto-exits after configurable idle timeout (default: 30 minutes)
+```
+
+### Crash Recovery
+
+If the daemon crashes:
+- CLI detects connection failure on next command
+- CLI spawns a new daemon automatically
+- User must re-establish debug session (`debugger start`)
+- Output buffer from previous session is lost
+
+If the DAP adapter crashes:
+- Daemon receives EOF on adapter stdout
+- Daemon transitions to TERMINATED → IDLE state
+- Next CLI command reports "Session terminated unexpectedly"
+- User can start a new session
+
+### Idle Timeout
+
+To prevent orphaned daemons:
+```toml
+# ~/.config/debugger-cli/config.toml
+[daemon]
+idle_timeout_minutes = 30  # Auto-exit after 30 min with no session
+```
+
+## Timeout Configuration
+
+### Default Timeouts
+
+| Operation | Default | Configurable |
+|-----------|---------|--------------|
+| Daemon spawn wait | 5 seconds | No |
+| IPC connect | 2 seconds | No |
+| DAP initialize | 10 seconds | Yes |
+| DAP request (general) | 30 seconds | Yes |
+| `await` command | 300 seconds | Yes (per-command) |
+| Daemon idle | 30 minutes | Yes |
+
+### Configuration
+
+```toml
+# ~/.config/debugger-cli/config.toml
+[timeouts]
+dap_initialize_secs = 10
+dap_request_secs = 30
+await_default_secs = 300
+
+[daemon]
+idle_timeout_minutes = 30
+```
+
+### Per-Command Overrides
+
+```bash
+# Override await timeout
+debugger await --timeout 120
+
+# Most commands use default timeout, not overridable
+debugger continue  # Uses dap_request_secs
+```
+
+## Output Buffer Management
+
+### Buffer Design
+
+The daemon buffers debuggee output (stdout/stderr) when no CLI client is connected:
+
+```rust
+pub struct OutputBuffer {
+    events: VecDeque<OutputEvent>,
+    max_size: usize,        // Default: 10,000 events
+    max_bytes: usize,       // Default: 10 MB
+    current_bytes: usize,
+}
+```
+
+### Buffer Limits
+
+| Limit | Default | Purpose |
+|-------|---------|---------|
+| Max events | 10,000 | Prevent memory exhaustion |
+| Max bytes | 10 MB | Hard cap on memory usage |
+
+When buffer is full, oldest events are dropped (circular buffer behavior).
+
+### Configuration
+
+```toml
+# ~/.config/debugger-cli/config.toml
+[output]
+max_events = 10000
+max_bytes_mb = 10
+```
+
+### Retrieval
+
+```bash
+# Get buffered output (clears buffer)
+debugger output
+
+# Get last N lines only
+debugger output --tail 100
+
+# Stream new output (doesn't clear buffer)
+debugger output --follow
+```
+
 ## Crate Dependencies
 
 ### Core Dependencies
