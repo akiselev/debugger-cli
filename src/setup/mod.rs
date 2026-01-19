@@ -179,8 +179,6 @@ async fn list_debuggers(json: bool) -> Result<()> {
 
     if json {
         println!("{}", serde_json::to_string_pretty(&results)?);
-    } else if results.is_empty() {
-        println!("No debuggers available.");
     }
 
     Ok(())
