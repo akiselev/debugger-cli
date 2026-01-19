@@ -61,6 +61,19 @@ struct StoredBreakpoint {
     message: Option<String>,
 }
 
+/// Stored watchpoint (data breakpoint) information
+#[derive(Debug, Clone)]
+struct StoredWatchpoint {
+    id: u32,
+    variable: String,
+    data_id: String,
+    access_type: String,
+    condition: Option<String>,
+    enabled: bool,
+    verified: bool,
+    message: Option<String>,
+}
+
 /// Output event for buffering
 #[derive(Debug, Clone)]
 pub struct OutputEvent {
@@ -93,6 +106,10 @@ pub struct DebugSession {
     function_breakpoints: Vec<StoredBreakpoint>,
     /// Next breakpoint ID
     next_bp_id: u32,
+    /// Data breakpoints (watchpoints)
+    watchpoints: Vec<StoredWatchpoint>,
+    /// Next watchpoint ID
+    next_watchpoint_id: u32,
     /// Cached threads
     threads: Vec<Thread>,
     /// Currently selected thread (may differ from stopped thread)
@@ -195,6 +212,8 @@ impl DebugSession {
             source_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
             next_bp_id: 1,
+            watchpoints: Vec::new(),
+            next_watchpoint_id: 1,
             threads: Vec::new(),
             selected_thread: None,
             stopped_thread: None,
@@ -264,6 +283,8 @@ impl DebugSession {
             source_breakpoints: HashMap::new(),
             function_breakpoints: Vec::new(),
             next_bp_id: 1,
+            watchpoints: Vec::new(),
+            next_watchpoint_id: 1,
             threads: Vec::new(),
             selected_thread: None,
             stopped_thread: None,
@@ -1115,5 +1136,249 @@ impl DebugSession {
             .first()
             .map(|t| t.id)
             .ok_or_else(|| Error::Internal("No threads available".to_string()))
+    }
+
+    // === Advanced Features ===
+
+    /// Check if adapter supports setting variables
+    pub fn supports_set_variable(&self) -> bool {
+        self.capabilities.supports_set_variable
+    }
+
+    /// Check if adapter supports data breakpoints (watchpoints)
+    pub fn supports_data_breakpoints(&self) -> bool {
+        self.capabilities.supports_data_breakpoints
+    }
+
+    /// Check if adapter supports memory reading
+    pub fn supports_read_memory(&self) -> bool {
+        self.capabilities.supports_read_memory_request
+    }
+
+    /// Check if adapter supports disassembly
+    pub fn supports_disassemble(&self) -> bool {
+        self.capabilities.supports_disassemble_request
+    }
+
+    /// Set a variable value
+    pub async fn set_variable(
+        &mut self,
+        name: &str,
+        value: &str,
+        variables_reference: Option<i64>,
+    ) -> Result<dap::SetVariableResponseBody> {
+        self.ensure_stopped()?;
+
+        // If no variables_reference provided, we need to find the variable in locals
+        let var_ref = match variables_reference {
+            Some(r) => r,
+            None => {
+                // Get locals scope to find the variable
+                let scopes = self.get_scopes(None).await?;
+                let locals_scope = scopes
+                    .iter()
+                    .find(|s| s.name == "Locals" || s.name == "Local")
+                    .or_else(|| scopes.first())
+                    .ok_or_else(|| Error::Internal("No scopes available".to_string()))?;
+                locals_scope.variables_reference
+            }
+        };
+
+        self.client.set_variable(var_ref, name, value).await
+    }
+
+    /// Read memory at an address
+    pub async fn read_memory(
+        &mut self,
+        address: &str,
+        count: u64,
+    ) -> Result<dap::ReadMemoryResponseBody> {
+        self.ensure_stopped()?;
+
+        if !self.supports_read_memory() {
+            return Err(Error::Internal(
+                "Debug adapter does not support memory reading".to_string(),
+            ));
+        }
+
+        self.client.read_memory(address, count, None).await
+    }
+
+    /// Disassemble instructions at an address
+    pub async fn disassemble(
+        &mut self,
+        address: &str,
+        count: u64,
+    ) -> Result<dap::DisassembleResponseBody> {
+        self.ensure_stopped()?;
+
+        if !self.supports_disassemble() {
+            return Err(Error::Internal(
+                "Debug adapter does not support disassembly".to_string(),
+            ));
+        }
+
+        self.client.disassemble(address, count, None).await
+    }
+
+    /// Get the instruction pointer address for disassembly
+    pub async fn get_instruction_pointer(&mut self) -> Result<String> {
+        self.ensure_stopped()?;
+
+        // Get current frame's instruction pointer
+        let thread_id = self.get_thread_id().await?;
+        let frames = self.client.stack_trace(thread_id, 1).await?;
+        let frame = frames.first().ok_or_else(|| {
+            Error::Internal("No stack frame available".to_string())
+        })?;
+
+        // lldb-dap provides the instruction pointer in the frame's id or we can use the
+        // frame address. Format as hex string.
+        // The DAP protocol uses "instruction pointer reference" which is typically the frame address
+        Ok(format!("0x{:x}", frame.id))
+    }
+
+    /// Add a watchpoint (data breakpoint)
+    pub async fn add_watchpoint(
+        &mut self,
+        variable: &str,
+        access_type: &str,
+        condition: Option<String>,
+    ) -> Result<crate::ipc::protocol::WatchpointInfo> {
+        self.ensure_stopped()?;
+
+        if !self.supports_data_breakpoints() {
+            return Err(Error::Internal(
+                "Debug adapter does not support data breakpoints/watchpoints".to_string(),
+            ));
+        }
+
+        // First, get data breakpoint info for the variable
+        let info = self.client.data_breakpoint_info(None, variable, self.current_frame).await?;
+
+        let data_id = info.data_id.ok_or_else(|| {
+            Error::Internal(format!(
+                "Cannot set watchpoint on '{}': {}",
+                variable, info.description
+            ))
+        })?;
+
+        // Parse access type
+        let dap_access_type = match access_type.to_lowercase().as_str() {
+            "read" => Some(dap::DataBreakpointAccessType::Read),
+            "write" => Some(dap::DataBreakpointAccessType::Write),
+            "readwrite" | "read_write" | "rw" => Some(dap::DataBreakpointAccessType::ReadWrite),
+            _ => None,
+        };
+
+        // Create the watchpoint ID
+        let wp_id = self.next_watchpoint_id;
+        self.next_watchpoint_id += 1;
+
+        // Store watchpoint info
+        let stored = StoredWatchpoint {
+            id: wp_id,
+            variable: variable.to_string(),
+            data_id: data_id.clone(),
+            access_type: access_type.to_string(),
+            condition: condition.clone(),
+            enabled: true,
+            verified: false,
+            message: None,
+        };
+        self.watchpoints.push(stored);
+
+        // Send all watchpoints to adapter
+        let dap_breakpoints: Vec<dap::DataBreakpoint> = self
+            .watchpoints
+            .iter()
+            .filter(|wp| wp.enabled)
+            .map(|wp| dap::DataBreakpoint {
+                data_id: wp.data_id.clone(),
+                access_type: match wp.access_type.to_lowercase().as_str() {
+                    "read" => Some(dap::DataBreakpointAccessType::Read),
+                    "write" => Some(dap::DataBreakpointAccessType::Write),
+                    _ => Some(dap::DataBreakpointAccessType::ReadWrite),
+                },
+                condition: wp.condition.clone(),
+                hit_condition: None,
+            })
+            .collect();
+
+        let results = self.client.set_data_breakpoints(dap_breakpoints).await?;
+
+        // Update verification status
+        if let Some(result) = results.last() {
+            if let Some(wp) = self.watchpoints.last_mut() {
+                wp.verified = result.verified;
+                wp.message = result.message.clone();
+            }
+        }
+
+        // Return the watchpoint info
+        let wp = self.watchpoints.last().unwrap();
+        Ok(crate::ipc::protocol::WatchpointInfo {
+            id: wp.id,
+            variable: wp.variable.clone(),
+            data_id: wp.data_id.clone(),
+            access_type: wp.access_type.clone(),
+            verified: wp.verified,
+            message: wp.message.clone(),
+            enabled: wp.enabled,
+        })
+    }
+
+    /// Remove a watchpoint
+    pub async fn remove_watchpoint(&mut self, id: u32) -> Result<()> {
+        let pos = self.watchpoints.iter().position(|wp| wp.id == id)
+            .ok_or(Error::BreakpointNotFound { id })?;
+
+        self.watchpoints.remove(pos);
+
+        // Re-send remaining watchpoints to adapter
+        let dap_breakpoints: Vec<dap::DataBreakpoint> = self
+            .watchpoints
+            .iter()
+            .filter(|wp| wp.enabled)
+            .map(|wp| dap::DataBreakpoint {
+                data_id: wp.data_id.clone(),
+                access_type: match wp.access_type.to_lowercase().as_str() {
+                    "read" => Some(dap::DataBreakpointAccessType::Read),
+                    "write" => Some(dap::DataBreakpointAccessType::Write),
+                    _ => Some(dap::DataBreakpointAccessType::ReadWrite),
+                },
+                condition: wp.condition.clone(),
+                hit_condition: None,
+            })
+            .collect();
+
+        self.client.set_data_breakpoints(dap_breakpoints).await?;
+        Ok(())
+    }
+
+    /// List all watchpoints
+    pub fn list_watchpoints(&self) -> Vec<crate::ipc::protocol::WatchpointInfo> {
+        self.watchpoints
+            .iter()
+            .map(|wp| crate::ipc::protocol::WatchpointInfo {
+                id: wp.id,
+                variable: wp.variable.clone(),
+                data_id: wp.data_id.clone(),
+                access_type: wp.access_type.clone(),
+                verified: wp.verified,
+                message: wp.message.clone(),
+                enabled: wp.enabled,
+            })
+            .collect()
+    }
+
+    /// Get program and args for restart
+    pub fn get_launch_args(&self) -> (&Path, &[String]) {
+        (&self.program, &self.args)
+    }
+
+    /// Check if we launched vs attached
+    pub fn was_launched(&self) -> bool {
+        self.launched
     }
 }

@@ -68,13 +68,15 @@ Install on:
 - [x] Configuration file support (`src/common/config.rs`)
 - [x] LLM-friendly error messages
 
-## Phase 7: Advanced (Optional) ⏳
+## Phase 7: Advanced ✅
 
-- [ ] Watchpoint/data breakpoint support
-- [ ] Memory read commands
-- [ ] CodeLLDB adapter support
-- [ ] Integration tests with mock adapter
-- [ ] Breakpoint enable/disable
+- [x] Watchpoint/data breakpoint support
+- [x] Memory read commands
+- [x] Disassembly view commands
+- [x] Variable modification (set command)
+- [x] CodeLLDB adapter support
+- [x] Integration tests with mock adapter
+- [x] Breakpoint enable/disable
 
 ---
 
@@ -86,10 +88,13 @@ Install on:
 | `attach <pid>` | | ✅ | Attach to running process |
 | `stop` | | ✅ | Stop debug session |
 | `detach` | | ✅ | Detach (keep process running) |
+| `restart` | | ✅ | Restart program |
 | `status` | | ✅ | Show daemon/session status |
 | `breakpoint add` | `break`, `b` | ✅ | Add breakpoint |
 | `breakpoint remove` | | ✅ | Remove breakpoint |
 | `breakpoint list` | | ✅ | List all breakpoints |
+| `breakpoint enable` | | ✅ | Enable a breakpoint |
+| `breakpoint disable` | | ✅ | Disable a breakpoint |
 | `continue` | `c` | ✅ | Continue execution |
 | `next` | `n` | ✅ | Step over |
 | `step` | `s` | ✅ | Step into |
@@ -100,20 +105,44 @@ Install on:
 | `locals` | | ✅ | Show local variables |
 | `print <expr>` | `p` | ✅ | Evaluate expression |
 | `eval <expr>` | | ✅ | Evaluate with side effects |
+| `set <var> <value>` | | ✅ | Set variable value |
+| `memory <addr>` | | ✅ | Read memory (hex dump) |
+| `disassemble` | | ✅ | Show assembly instructions |
+| `watch add` | | ✅ | Add watchpoint (data breakpoint) |
+| `watch remove` | | ✅ | Remove watchpoint |
+| `watch list` | | ✅ | List watchpoints |
 | `context` | `where` | ✅ | Source context + variables |
 | `threads` | | ✅ | List threads |
 | `thread <id>` | | ✅ | Switch thread |
 | `frame <n>` | | ✅ | Switch frame |
 | `output` | | ✅ | Get program output |
-| `restart` | | ⏳ | Restart program (stub) |
+| `setup` | | ✅ | Install debug adapters |
 
 ---
 
 ## Current Status
 
-**Phase**: 6 (Polish) Complete
-**Last Updated**: 2026-01-18
-**Build Status**: ✅ Compiles, tests pass, verified with lldb-dap
+**Phase**: 7 (Advanced) Complete - Feature Complete!
+**Last Updated**: 2026-01-19
+**Build Status**: ✅ Compiles, tests pass, verified with lldb-dap and mock adapter
+
+### Phase 7 Additions (2026-01-19)
+
+1. **Watchpoints/Data Breakpoints**: Added `watch add/remove/list` commands for hardware watchpoints
+   that break when a variable is read or written (requires adapter support).
+
+2. **Memory Read**: Added `memory <address>` command to dump raw memory in hex/decimal/ascii format.
+
+3. **Disassembly**: Added `disassemble` command to view assembly instructions at current location or address.
+
+4. **Variable Modification**: Added `set <var> <value>` command to change variable values during debugging.
+
+5. **Breakpoint Toggling**: Added `breakpoint enable/disable` commands to temporarily toggle breakpoints.
+
+6. **Mock Adapter**: Created `mock-adapter` binary for integration testing without requiring lldb-dap.
+   Run tests with: `cargo test test_mock_adapter`
+
+7. **CodeLLDB Support**: Improved CodeLLDB adapter installation and configuration.
 
 ### Recent Fixes (2026-01-18)
 

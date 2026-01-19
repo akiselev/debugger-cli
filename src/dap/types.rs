@@ -220,6 +220,180 @@ pub struct EvaluateArguments {
     pub context: Option<String>,
 }
 
+/// SetVariable request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetVariableArguments {
+    /// The reference of the variable container
+    pub variables_reference: i64,
+    /// The name of the variable to set
+    pub name: String,
+    /// The value to set
+    pub value: String,
+}
+
+/// SetVariable response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetVariableResponseBody {
+    /// The new value of the variable
+    pub value: String,
+    /// The type of the new value
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+    /// If variablesReference is > 0, the new value is structured
+    #[serde(default)]
+    pub variables_reference: i64,
+}
+
+/// ReadMemory request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadMemoryArguments {
+    /// Memory reference to read from (address as string, e.g., "0x1234" or from variable)
+    pub memory_reference: String,
+    /// Number of bytes to read
+    pub count: u64,
+    /// Optional offset from memory_reference
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
+}
+
+/// ReadMemory response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadMemoryResponseBody {
+    /// The address of the first byte of data returned (may differ from requested)
+    pub address: String,
+    /// The number of unreadable bytes encountered
+    #[serde(default)]
+    pub unreadable_bytes: u64,
+    /// Base64 encoded bytes read
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+/// Disassemble request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisassembleArguments {
+    /// Memory reference to the base location
+    pub memory_reference: String,
+    /// Optional offset to add to memory_reference
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
+    /// Number of instructions to disassemble
+    pub instruction_count: u64,
+    /// If true, include address in result
+    #[serde(default = "default_true")]
+    pub resolve_symbols: bool,
+}
+
+/// Disassemble response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisassembleResponseBody {
+    pub instructions: Vec<DisassembledInstruction>,
+}
+
+/// A single disassembled instruction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisassembledInstruction {
+    /// The address of the instruction
+    pub address: String,
+    /// Raw bytes representing the instruction (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_bytes: Option<String>,
+    /// Text representing the instruction and its operands
+    pub instruction: String,
+    /// Name of the symbol at this location
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// Source location that corresponds to this instruction
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<Source>,
+    /// Line number in source file
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// Column number in source file
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+}
+
+/// Data breakpoint info request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataBreakpointInfoArguments {
+    /// Reference to the variable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variables_reference: Option<i64>,
+    /// Name of the variable
+    pub name: String,
+    /// Frame where the variable is defined (for frame-specific scope)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<i64>,
+}
+
+/// Data breakpoint info response body
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataBreakpointInfoResponseBody {
+    /// Data ID for the setDataBreakpoints request (null if not available)
+    pub data_id: Option<String>,
+    /// Human-readable description of the variable or address
+    pub description: String,
+    /// Access types allowed
+    #[serde(default)]
+    pub access_types: Vec<DataBreakpointAccessType>,
+    /// If true, a data breakpoint can be set
+    #[serde(default)]
+    pub can_persist: bool,
+}
+
+/// Access type for data breakpoints
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DataBreakpointAccessType {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl std::fmt::Display for DataBreakpointAccessType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read => write!(f, "read"),
+            Self::Write => write!(f, "write"),
+            Self::ReadWrite => write!(f, "readWrite"),
+        }
+    }
+}
+
+/// Data breakpoint to set
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataBreakpoint {
+    /// Data ID from dataBreakpointInfo response
+    pub data_id: String,
+    /// Access type
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_type: Option<DataBreakpointAccessType>,
+    /// Condition
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    /// Hit condition
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_condition: Option<String>,
+}
+
+/// SetDataBreakpoints request arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDataBreakpointsArguments {
+    pub breakpoints: Vec<DataBreakpoint>,
+}
+
 /// Disconnect request arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

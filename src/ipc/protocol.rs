@@ -191,6 +191,52 @@ pub enum Command {
     /// Subscribe to output events (for --follow)
     SubscribeOutput,
 
+    // === Advanced Features ===
+    /// Set a variable value
+    SetVariable {
+        /// Variable name
+        name: String,
+        /// New value
+        value: String,
+        /// Variables reference (scope container)
+        variables_reference: Option<i64>,
+    },
+
+    /// Read memory at address
+    ReadMemory {
+        /// Address to read from (hex string like "0x1234" or variable expression)
+        address: String,
+        /// Number of bytes to read
+        count: u64,
+    },
+
+    /// Disassemble instructions
+    Disassemble {
+        /// Address or expression to disassemble
+        address: String,
+        /// Number of instructions to show
+        count: u64,
+    },
+
+    /// Add a watchpoint (data breakpoint)
+    WatchpointAdd {
+        /// Variable name to watch
+        variable: String,
+        /// Access type: "read", "write", or "readwrite"
+        access_type: String,
+        /// Optional condition
+        condition: Option<String>,
+    },
+
+    /// Remove a watchpoint
+    WatchpointRemove {
+        /// Watchpoint ID
+        id: u32,
+    },
+
+    /// List all watchpoints
+    WatchpointList,
+
     // === Shutdown ===
     /// Shutdown the daemon
     Shutdown,
@@ -355,6 +401,49 @@ pub struct SourceLine {
     pub number: u32,
     pub content: String,
     pub is_current: bool,
+}
+
+/// Set variable result
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetVariableResult {
+    pub value: String,
+    pub type_name: Option<String>,
+}
+
+/// Memory read result
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MemoryResult {
+    pub address: String,
+    pub data: Vec<u8>,
+    pub count: usize,
+}
+
+/// Disassembly instruction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisassemblyInstruction {
+    pub address: String,
+    pub instruction: String,
+    pub symbol: Option<String>,
+    pub source_file: Option<String>,
+    pub line: Option<u32>,
+}
+
+/// Disassembly result
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DisassemblyResult {
+    pub instructions: Vec<DisassemblyInstruction>,
+}
+
+/// Watchpoint information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchpointInfo {
+    pub id: u32,
+    pub variable: String,
+    pub data_id: String,
+    pub access_type: String,
+    pub verified: bool,
+    pub message: Option<String>,
+    pub enabled: bool,
 }
 
 #[cfg(test)]

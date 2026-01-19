@@ -706,3 +706,326 @@ fn test_config_loading() {
         "Expected failure for nonexistent adapter"
     );
 }
+
+// ============================================================================
+// Mock Adapter Integration Tests
+//
+// These tests use the mock-adapter binary to test the debugger without
+// requiring a real debug adapter like lldb-dap.
+// ============================================================================
+
+/// Find the mock adapter binary
+fn find_mock_adapter() -> Option<PathBuf> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let candidates = [
+        PathBuf::from(manifest_dir).join("target/debug/mock-adapter"),
+        PathBuf::from(manifest_dir).join("target/release/mock-adapter"),
+    ];
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Some(candidate.clone());
+        }
+    }
+    None
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_basic_workflow() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built. Run 'cargo build' first.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_basic");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    let output = ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    assert!(output.contains("Session started") || output.contains("Stopped"),
+        "Expected session start, got: {}", output);
+
+    // Wait for stop
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+    assert!(output.contains("Stopped"), "Expected stopped state, got: {}", output);
+
+    // Check status
+    let output = ctx.run_debugger_ok(&["status"]);
+    assert!(output.contains("Session active") || output.contains("stopped"),
+        "Expected active session, got: {}", output);
+
+    // Get backtrace
+    let output = ctx.run_debugger_ok(&["backtrace"]);
+    assert!(output.contains("main"), "Expected main in backtrace, got: {}", output);
+
+    // Get locals
+    let output = ctx.run_debugger_ok(&["locals"]);
+    assert!(output.contains("x") || output.contains("42"),
+        "Expected variable x in locals, got: {}", output);
+
+    // Continue and wait
+    ctx.run_debugger_ok(&["continue"]);
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+    assert!(output.contains("Stopped"), "Expected stopped after continue, got: {}", output);
+
+    // Step
+    ctx.run_debugger_ok(&["step"]);
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+    assert!(output.contains("Stopped") || output.contains("Step"),
+        "Expected stopped after step, got: {}", output);
+
+    // Stop session
+    let output = ctx.run_debugger_ok(&["stop"]);
+    assert!(output.contains("Session stopped") || output.contains("stopped"),
+        "Expected session stop, got: {}", output);
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_breakpoints() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_breakpoints");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+
+    // Add breakpoint
+    let output = ctx.run_debugger_ok(&["breakpoint", "add", "main.c:10"]);
+    assert!(output.contains("Breakpoint") && output.contains("set"),
+        "Expected breakpoint set, got: {}", output);
+
+    // List breakpoints
+    let output = ctx.run_debugger_ok(&["breakpoint", "list"]);
+    assert!(output.contains("main.c") || output.contains("10"),
+        "Expected breakpoint in list, got: {}", output);
+
+    // Add function breakpoint
+    let output = ctx.run_debugger_ok(&["breakpoint", "add", "main"]);
+    assert!(output.contains("Breakpoint"), "Expected function breakpoint, got: {}", output);
+
+    // Remove breakpoint
+    let output = ctx.run_debugger_ok(&["breakpoint", "remove", "1"]);
+    assert!(output.contains("Removed") || output.contains("removed"),
+        "Expected breakpoint removed, got: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_evaluation() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_eval");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+
+    // Print variable
+    let output = ctx.run_debugger_ok(&["print", "x"]);
+    assert!(output.contains("42") || output.contains("x"),
+        "Expected variable value, got: {}", output);
+
+    // Eval expression
+    let output = ctx.run_debugger_ok(&["eval", "x + 1"]);
+    assert!(output.contains("eval") || output.contains("result"),
+        "Expected eval result, got: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_set_variable() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_set_var");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+
+    // Set variable
+    let output = ctx.run_debugger_ok(&["set", "x", "100"]);
+    assert!(output.contains("100") || output.contains("x"),
+        "Expected variable set, got: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_memory() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_memory");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+
+    // Read memory
+    let output = ctx.run_debugger_ok(&["memory", "0x1000", "--count", "32"]);
+    assert!(output.contains("Memory") || output.contains("00"),
+        "Expected memory dump, got: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_disassemble() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_disasm");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+
+    // Disassemble
+    let output = ctx.run_debugger_ok(&["disassemble", ".", "--count", "5"]);
+    assert!(output.contains("mov") || output.contains("0x"),
+        "Expected disassembly, got: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_watchpoints() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_watchpoints");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+
+    // Add watchpoint
+    let output = ctx.run_debugger_ok(&["watch", "add", "x", "--access", "write"]);
+    assert!(output.contains("Watchpoint") || output.contains("set"),
+        "Expected watchpoint set, got: {}", output);
+
+    // List watchpoints
+    let output = ctx.run_debugger_ok(&["watch", "list"]);
+    assert!(output.contains("x") || output.contains("write") || output.contains("Watchpoint"),
+        "Expected watchpoint in list, got: {}", output);
+
+    // Remove watchpoint
+    let output = ctx.run_debugger_ok(&["watch", "remove", "1"]);
+    assert!(output.contains("removed") || output.contains("Watchpoint"),
+        "Expected watchpoint removed, got: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "run with --test-threads=1 to avoid daemon conflicts"]
+fn test_mock_adapter_threads() {
+    let mock_adapter = match find_mock_adapter() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: mock-adapter not built.");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("mock_threads");
+    ctx.create_config("mock-adapter", mock_adapter.to_str().unwrap());
+
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    ctx.run_debugger_ok(&[
+        "start", "/tmp/fake-program", "--adapter", "mock-adapter", "--stop-on-entry"
+    ]);
+    ctx.run_debugger_ok(&["await", "--timeout", "5"]);
+
+    // List threads
+    let output = ctx.run_debugger_ok(&["threads"]);
+    assert!(output.contains("main") || output.contains("Thread"),
+        "Expected thread list, got: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}

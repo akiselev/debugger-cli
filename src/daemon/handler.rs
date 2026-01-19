@@ -459,6 +459,119 @@ async fn handle_command_inner(
             Err(Error::Internal("Output streaming not yet implemented".to_string()))
         }
 
+        // === Advanced Features ===
+        Command::SetVariable {
+            name,
+            value,
+            variables_reference,
+        } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+
+            if !sess.supports_set_variable() {
+                return Err(Error::Internal(
+                    "Debug adapter does not support setting variables".to_string(),
+                ));
+            }
+
+            let result = sess.set_variable(&name, &value, variables_reference).await?;
+            Ok(json!({
+                "name": name,
+                "value": result.value,
+                "type": result.type_name,
+            }))
+        }
+
+        Command::ReadMemory { address, count } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+
+            if !sess.supports_read_memory() {
+                return Err(Error::Internal(
+                    "Debug adapter does not support memory reading".to_string(),
+                ));
+            }
+
+            let result = sess.read_memory(&address, count).await?;
+
+            // Decode base64 data
+            let bytes = if let Some(data) = &result.data {
+                use base64::{Engine as _, engine::general_purpose};
+                general_purpose::STANDARD.decode(data).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            Ok(json!({
+                "address": result.address,
+                "data": bytes,
+                "count": bytes.len(),
+                "unreadable_bytes": result.unreadable_bytes,
+            }))
+        }
+
+        Command::Disassemble { address, count } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+
+            if !sess.supports_disassemble() {
+                return Err(Error::Internal(
+                    "Debug adapter does not support disassembly".to_string(),
+                ));
+            }
+
+            // If address is empty or ".", use current instruction pointer
+            let actual_address = if address.is_empty() || address == "." {
+                sess.get_instruction_pointer().await?
+            } else {
+                address
+            };
+
+            let result = sess.disassemble(&actual_address, count).await?;
+
+            let instructions: Vec<serde_json::Value> = result
+                .instructions
+                .iter()
+                .map(|i| {
+                    json!({
+                        "address": i.address,
+                        "instruction": i.instruction,
+                        "symbol": i.symbol,
+                        "source_file": i.location.as_ref().and_then(|s| s.path.clone()),
+                        "line": i.line,
+                    })
+                })
+                .collect();
+
+            Ok(json!({ "instructions": instructions }))
+        }
+
+        Command::WatchpointAdd {
+            variable,
+            access_type,
+            condition,
+        } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+
+            if !sess.supports_data_breakpoints() {
+                return Err(Error::Internal(
+                    "Debug adapter does not support data breakpoints/watchpoints".to_string(),
+                ));
+            }
+
+            let info = sess.add_watchpoint(&variable, &access_type, condition).await?;
+            Ok(serde_json::to_value(info)?)
+        }
+
+        Command::WatchpointRemove { id } => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            sess.remove_watchpoint(id).await?;
+            Ok(json!({ "removed": id }))
+        }
+
+        Command::WatchpointList => {
+            let sess = session.as_ref().ok_or(Error::SessionNotActive)?;
+            let watchpoints = sess.list_watchpoints();
+            Ok(json!({ "watchpoints": watchpoints }))
+        }
+
         // === Shutdown ===
         Command::Shutdown => {
             // Signal daemon to exit

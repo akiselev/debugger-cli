@@ -668,6 +668,89 @@ impl DapClient {
         self.request::<Value>("restart", Some(args)).await?;
         Ok(())
     }
+
+    /// Set a variable value
+    pub async fn set_variable(
+        &mut self,
+        variables_reference: i64,
+        name: &str,
+        value: &str,
+    ) -> Result<SetVariableResponseBody> {
+        let args = SetVariableArguments {
+            variables_reference,
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+
+        self.request("setVariable", Some(serde_json::to_value(&args)?))
+            .await
+    }
+
+    /// Read memory
+    pub async fn read_memory(
+        &mut self,
+        memory_reference: &str,
+        count: u64,
+        offset: Option<i64>,
+    ) -> Result<ReadMemoryResponseBody> {
+        let args = ReadMemoryArguments {
+            memory_reference: memory_reference.to_string(),
+            count,
+            offset,
+        };
+
+        self.request("readMemory", Some(serde_json::to_value(&args)?))
+            .await
+    }
+
+    /// Disassemble memory
+    pub async fn disassemble(
+        &mut self,
+        memory_reference: &str,
+        instruction_count: u64,
+        offset: Option<i64>,
+    ) -> Result<DisassembleResponseBody> {
+        let args = DisassembleArguments {
+            memory_reference: memory_reference.to_string(),
+            offset,
+            instruction_count,
+            resolve_symbols: true,
+        };
+
+        self.request("disassemble", Some(serde_json::to_value(&args)?))
+            .await
+    }
+
+    /// Get data breakpoint info for a variable
+    pub async fn data_breakpoint_info(
+        &mut self,
+        variables_reference: Option<i64>,
+        name: &str,
+        frame_id: Option<i64>,
+    ) -> Result<DataBreakpointInfoResponseBody> {
+        let args = DataBreakpointInfoArguments {
+            variables_reference,
+            name: name.to_string(),
+            frame_id,
+        };
+
+        self.request("dataBreakpointInfo", Some(serde_json::to_value(&args)?))
+            .await
+    }
+
+    /// Set data breakpoints (watchpoints)
+    pub async fn set_data_breakpoints(
+        &mut self,
+        breakpoints: Vec<DataBreakpoint>,
+    ) -> Result<Vec<Breakpoint>> {
+        let args = SetDataBreakpointsArguments { breakpoints };
+
+        let response: SetBreakpointsResponseBody = self
+            .request("setDataBreakpoints", Some(serde_json::to_value(&args)?))
+            .await?;
+
+        Ok(response.breakpoints)
+    }
 }
 
 impl Drop for DapClient {

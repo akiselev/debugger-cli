@@ -9,6 +9,10 @@ license = "MIT"
 name = "debugger"
 path = "src/main.rs"
 
+[[bin]]
+name = "mock-adapter"
+path = "src/bin/mock_adapter.rs"
+
 [lib]
 name = "debugger"
 path = "src/lib.rs"
@@ -55,6 +59,9 @@ tempfile = "3.14"
 os_info = "3.9"
 async-trait = "0.1"
 futures-util = "0.3"
+
+# Encoding
+base64 = "0.22"
 
 [profile.release]
 strip = true

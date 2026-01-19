@@ -4,11 +4,11 @@
 
 mod spawn;
 
-use crate::commands::{BreakpointCommands, Commands};
+use crate::commands::{BreakpointCommands, Commands, WatchCommands};
 use crate::common::{Error, Result};
 use crate::ipc::protocol::{
     BreakpointInfo, BreakpointLocation, Command, ContextResult, EvaluateContext, EvaluateResult,
-    StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo,
+    StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo, WatchpointInfo,
 };
 use crate::ipc::DaemonClient;
 use crate::setup;
@@ -569,6 +569,143 @@ pub async fn dispatch(command: Commands) -> Result<()> {
             };
             setup::run(opts).await
         }
+
+        Commands::Set { name, value } => {
+            let mut client = DaemonClient::connect().await?;
+
+            let result = client
+                .send_command(Command::SetVariable {
+                    name: name.clone(),
+                    value: value.clone(),
+                    variables_reference: None,
+                })
+                .await?;
+
+            let new_value = result["value"].as_str().unwrap_or(&value);
+            let type_name = result["type"].as_str();
+
+            if let Some(t) = type_name {
+                println!("{} = {} ({})", name, new_value, t);
+            } else {
+                println!("{} = {}", name, new_value);
+            }
+
+            Ok(())
+        }
+
+        Commands::Memory { address, count, format } => {
+            let mut client = DaemonClient::connect().await?;
+
+            let result = client
+                .send_command(Command::ReadMemory { address: address.clone(), count })
+                .await?;
+
+            let addr = result["address"].as_str().unwrap_or(&address);
+            let data: Vec<u8> = serde_json::from_value(result["data"].clone()).unwrap_or_default();
+
+            if data.is_empty() {
+                println!("No data read from {}", addr);
+                return Ok(());
+            }
+
+            println!("Memory at {}:", addr);
+            print_memory(&data, &format);
+
+            Ok(())
+        }
+
+        Commands::Disassemble { address, count } => {
+            let mut client = DaemonClient::connect().await?;
+
+            let result = client
+                .send_command(Command::Disassemble { address, count })
+                .await?;
+
+            let instructions: Vec<serde_json::Value> =
+                serde_json::from_value(result["instructions"].clone()).unwrap_or_default();
+
+            if instructions.is_empty() {
+                println!("No instructions to display");
+            } else {
+                for inst in &instructions {
+                    let addr = inst["address"].as_str().unwrap_or("?");
+                    let instr = inst["instruction"].as_str().unwrap_or("?");
+                    let symbol = inst["symbol"].as_str();
+                    let source = inst["source_file"].as_str();
+                    let line = inst["line"].as_u64();
+
+                    // Print symbol if present
+                    if let Some(sym) = symbol {
+                        println!("{}:", sym);
+                    }
+
+                    // Print instruction
+                    print!("  {:16}  {}", addr, instr);
+
+                    // Print source info if present
+                    if let (Some(src), Some(l)) = (source, line) {
+                        print!("  ; {}:{}", src, l);
+                    }
+                    println!();
+                }
+            }
+
+            Ok(())
+        }
+
+        Commands::Watch(watch_cmd) => match watch_cmd {
+            WatchCommands::Add {
+                variable,
+                access,
+                condition,
+            } => {
+                let mut client = DaemonClient::connect().await?;
+
+                let result = client
+                    .send_command(Command::WatchpointAdd {
+                        variable: variable.clone(),
+                        access_type: access,
+                        condition,
+                    })
+                    .await?;
+
+                let info: WatchpointInfo = serde_json::from_value(result)?;
+                print_watchpoint_added(&info);
+
+                Ok(())
+            }
+
+            WatchCommands::Remove { id } => {
+                let mut client = DaemonClient::connect().await?;
+
+                client
+                    .send_command(Command::WatchpointRemove { id })
+                    .await?;
+
+                println!("Watchpoint {} removed", id);
+
+                Ok(())
+            }
+
+            WatchCommands::List => {
+                let mut client = DaemonClient::connect().await?;
+
+                let result = client.send_command(Command::WatchpointList).await?;
+                let watchpoints: Vec<WatchpointInfo> =
+                    serde_json::from_value(result["watchpoints"].clone())?;
+
+                if watchpoints.is_empty() {
+                    println!("No watchpoints set");
+                } else {
+                    println!("Watchpoints:");
+                    for wp in &watchpoints {
+                        print_watchpoint(wp);
+                    }
+                }
+
+                Ok(())
+            }
+        },
     }
 }
 
@@ -659,6 +796,9 @@ fn print_stop_result(stop: &StopResult) {
         "entry" => {
             println!("Stopped at entry point");
         }
+        "data breakpoint" | "watchpoint" => {
+            println!("Stopped: watchpoint hit");
+        }
         _ => {
             println!("Stopped: {}", stop.reason);
         }
@@ -666,5 +806,99 @@ fn print_stop_result(stop: &StopResult) {
 
     if let (Some(source), Some(line)) = (&stop.source, stop.line) {
         println!("  Location: {}:{}", source, line);
+    }
+}
+
+fn print_watchpoint_added(info: &WatchpointInfo) {
+    if info.verified {
+        println!(
+            "Watchpoint {} set on '{}' ({})",
+            info.id, info.variable, info.access_type
+        );
+    } else {
+        println!(
+            "Watchpoint {} pending on '{}'{}",
+            info.id,
+            info.variable,
+            info.message.as_ref().map(|m| format!(": {}", m)).unwrap_or_default()
+        );
+    }
+}
+
+fn print_watchpoint(info: &WatchpointInfo) {
+    let status = if info.enabled {
+        if info.verified { "✓" } else { "?" }
+    } else {
+        "○"
+    };
+
+    let extras = info.message.clone();
+
+    if let Some(msg) = extras {
+        println!("  {} {} '{}' ({}) - {}", status, info.id, info.variable, info.access_type, msg);
+    } else {
+        println!("  {} {} '{}' ({})", status, info.id, info.variable, info.access_type);
+    }
+}
+
+fn print_memory(data: &[u8], format: &str) {
+    match format.to_lowercase().as_str() {
+        "hex" | "h" => {
+            // Print in hexdump format
+            for (i, chunk) in data.chunks(16).enumerate() {
+                let offset = i * 16;
+                print!("{:08x}  ", offset);
+
+                // Hex bytes
+                for (j, byte) in chunk.iter().enumerate() {
+                    print!("{:02x} ", byte);
+                    if j == 7 {
+                        print!(" ");
+                    }
+                }
+
+                // Padding for incomplete lines
+                for j in chunk.len()..16 {
+                    print!("   ");
+                    if j == 7 {
+                        print!(" ");
+                    }
+                }
+
+                // ASCII representation
+                print!(" |");
+                for byte in chunk {
+                    if *byte >= 0x20 && *byte < 0x7f {
+                        print!("{}", *byte as char);
+                    } else {
+                        print!(".");
+                    }
+                }
+                println!("|");
+            }
+        }
+        "decimal" | "d" => {
+            for (i, byte) in data.iter().enumerate() {
+                if i > 0 && i % 16 == 0 {
+                    println!();
+                }
+                print!("{:3} ", byte);
+            }
+            println!();
+        }
+        "ascii" | "a" => {
+            for byte in data {
+                if *byte >= 0x20 && *byte < 0x7f {
+                    print!("{}", *byte as char);
+                } else {
+                    print!(".");
+                }
+            }
+            println!();
+        }
+        _ => {
+            // Default to hex
+            print_memory(data, "hex");
+        }
     }
 }

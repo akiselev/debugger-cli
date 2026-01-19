@@ -205,6 +205,70 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Set a variable value
+    Set {
+        /// Variable name
+        name: String,
+
+        /// New value
+        value: String,
+    },
+
+    /// Read memory at an address
+    Memory {
+        /// Address to read (e.g., "0x1234" or "&variable")
+        address: String,
+
+        /// Number of bytes to read
+        #[arg(long, short, default_value = "64")]
+        count: u64,
+
+        /// Output format: hex, decimal, or ascii
+        #[arg(long, short, default_value = "hex")]
+        format: String,
+    },
+
+    /// Disassemble instructions
+    Disassemble {
+        /// Address to disassemble (empty or "." for current location)
+        #[arg(default_value = ".")]
+        address: String,
+
+        /// Number of instructions to show
+        #[arg(long, short, default_value = "10")]
+        count: u64,
+    },
+
+    /// Watchpoint management (data breakpoints)
+    #[command(subcommand)]
+    Watch(WatchCommands),
+}
+
+#[derive(Subcommand)]
+pub enum WatchCommands {
+    /// Add a watchpoint on a variable
+    Add {
+        /// Variable name to watch
+        variable: String,
+
+        /// Access type: read, write, or readwrite
+        #[arg(long, short, default_value = "write")]
+        access: String,
+
+        /// Condition for the watchpoint
+        #[arg(long, short)]
+        condition: Option<String>,
+    },
+
+    /// Remove a watchpoint
+    Remove {
+        /// Watchpoint ID to remove
+        id: u32,
+    },
+
+    /// List all watchpoints
+    List,
 }
 
 #[derive(Subcommand)]
