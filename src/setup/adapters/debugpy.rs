@@ -4,7 +4,7 @@
 
 use crate::common::{Error, Result};
 use crate::setup::installer::{
-    adapters_dir, ensure_adapters_dir, run_command, write_version_file,
+    adapters_dir, ensure_adapters_dir, run_command_args, write_version_file,
     InstallMethod, InstallOptions, InstallResult, InstallStatus, Installer,
 };
 use crate::setup::registry::{DebuggerInfo, Platform};
@@ -36,10 +36,10 @@ impl Installer for DebugpyInstaller {
 
         if python_path.exists() {
             // Verify debugpy is installed in the venv
-            let check = run_command(&format!(
-                "{} -c \"import debugpy; print(debugpy.__version__)\"",
-                python_path.display()
-            ))
+            let check = run_command_args(
+                &python_path,
+                &["-c", "import debugpy; print(debugpy.__version__)"],
+            )
             .await;
 
             match check {
@@ -59,8 +59,13 @@ impl Installer for DebugpyInstaller {
         }
 
         // Check if debugpy is installed globally
-        if let Ok(version) = run_command("python3 -c \"import debugpy; print(debugpy.__version__)\"").await {
-            if let Ok(python_path) = which::which("python3") {
+        if let Ok(python_path) = which::which("python3") {
+            if let Ok(version) = run_command_args(
+                &python_path,
+                &["-c", "import debugpy; print(debugpy.__version__)"],
+            )
+            .await
+            {
                 return Ok(InstallStatus::Installed {
                     path: python_path,
                     version: Some(version.trim().to_string()),
@@ -124,11 +129,11 @@ async fn find_python() -> Result<PathBuf> {
     // Try python3 first, then python
     for cmd in &["python3", "python"] {
         if let Ok(path) = which::which(cmd) {
-            // Verify it's Python 3.7+
-            let version_check = run_command(&format!(
-                "{} -c \"import sys; assert sys.version_info >= (3, 7)\"",
-                path.display()
-            ))
+            // Verify it's Python 3.7+ using explicit exit code (not assertion)
+            let version_check = run_command_args(
+                &path,
+                &["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)"],
+            )
             .await;
 
             if version_check.is_ok() {
@@ -179,12 +184,7 @@ async fn install_debugpy(opts: &InstallOptions) -> Result<InstallResult> {
     // Create virtual environment
     if !venv_dir.exists() {
         println!("Creating virtual environment...");
-        run_command(&format!(
-            "{} -m venv {}",
-            python.display(),
-            venv_dir.display()
-        ))
-        .await?;
+        run_command_args(&python, &["-m", "venv", venv_dir.to_str().unwrap_or("venv")]).await?;
     }
 
     // Get venv pip
@@ -193,13 +193,9 @@ async fn install_debugpy(opts: &InstallOptions) -> Result<InstallResult> {
 
     // Upgrade pip first
     println!("Upgrading pip...");
-    let _ = run_command(&format!(
-        "{} -m pip install --upgrade pip",
-        venv_python.display()
-    ))
-    .await;
+    let _ = run_command_args(&venv_python, &["-m", "pip", "install", "--upgrade", "pip"]).await;
 
-    // Install debugpy
+    // Install debugpy - use separate args to prevent command injection
     let package = if let Some(version) = &opts.version {
         format!("debugpy=={}", version)
     } else {
@@ -207,13 +203,13 @@ async fn install_debugpy(opts: &InstallOptions) -> Result<InstallResult> {
     };
 
     println!("Installing {}...", package);
-    run_command(&format!("{} install {}", pip.display(), package)).await?;
+    run_command_args(&pip, &["install", &package]).await?;
 
     // Get installed version
-    let version = run_command(&format!(
-        "{} -c \"import debugpy; print(debugpy.__version__)\"",
-        venv_python.display()
-    ))
+    let version = run_command_args(
+        &venv_python,
+        &["-c", "import debugpy; print(debugpy.__version__)"],
+    )
     .await
     .ok()
     .map(|s| s.trim().to_string());

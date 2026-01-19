@@ -369,6 +369,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "which",
+ "xz2",
  "zip",
 ]
 

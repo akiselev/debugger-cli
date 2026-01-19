@@ -114,10 +114,13 @@ fn has_c_files(dir: &Path) -> bool {
 /// Check if directory contains files with a specific extension
 fn has_extension_in_dir(dir: &Path, ext: &str) -> bool {
     if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == ext).unwrap_or(false) {
-                return true;
+        for entry in entries {
+            // Explicitly handle Result - skip entries that can't be read
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.extension().map(|e| e == ext).unwrap_or(false) {
+                    return true;
+                }
             }
         }
     }

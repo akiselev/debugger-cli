@@ -5,7 +5,7 @@
 use crate::common::{Error, Result};
 use crate::setup::installer::{
     adapters_dir, arch_str, download_file, ensure_adapters_dir, extract_tar_gz,
-    get_github_release, make_executable, platform_str, read_version_file, run_command,
+    get_github_release, make_executable, platform_str, read_version_file, run_command_args,
     write_version_file, InstallMethod, InstallOptions, InstallResult, InstallStatus, Installer,
     PackageManager,
 };
@@ -176,10 +176,13 @@ async fn install_via_go(tool: &str, package: &str, opts: &InstallOptions) -> Res
         package.to_string()
     };
 
-    let command = format!("{} install {}", tool, package);
-    println!("Running: {}", command);
+    println!("Running: {} install {}", tool, package);
 
-    run_command(&command).await?;
+    // Use run_command_args to prevent command injection
+    let go_path = which::which(tool).map_err(|_| {
+        Error::Internal(format!("{} not found in PATH", tool))
+    })?;
+    run_command_args(&go_path, &["install", &package]).await?;
 
     // Find the installed binary
     let path = which::which("dlv").map_err(|_| {
@@ -249,31 +252,18 @@ async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
     println!("Extracting...");
     extract_tar_gz(&archive_path, temp_dir.path())?;
 
-    // Find dlv binary in extracted directory
-    let dlv_src = temp_dir.path().join("dlv");
-    if !dlv_src.exists() {
-        // Try looking in a subdirectory
-        let dlv_src_alt = std::fs::read_dir(temp_dir.path())?
-            .filter_map(|e| e.ok())
-            .find(|e| e.path().is_dir())
-            .map(|e| e.path().join("dlv"))
-            .filter(|p| p.exists());
-
-        if dlv_src_alt.is_none() {
-            return Err(Error::Internal(
-                "dlv binary not found in downloaded archive".to_string(),
-            ));
-        }
-    }
-
+    // Find dlv binary in extracted directory (check root first, then subdirectories)
+    let dlv_src = temp_dir.path().join(binary_name());
     let dlv_src = if dlv_src.exists() {
         dlv_src
     } else {
+        // Try looking in a subdirectory
         std::fs::read_dir(temp_dir.path())?
             .filter_map(|e| e.ok())
             .find(|e| e.path().is_dir())
-            .map(|e| e.path().join("dlv"))
-            .ok_or_else(|| Error::Internal("Could not find dlv in archive".to_string()))?
+            .map(|e| e.path().join(binary_name()))
+            .filter(|p| p.exists())
+            .ok_or_else(|| Error::Internal("dlv binary not found in downloaded archive".to_string()))?
     };
 
     // Create installation directory

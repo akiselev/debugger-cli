@@ -207,10 +207,19 @@ async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
                 let dir = lldb_dir.join(subdir);
                 if dir.exists() {
                     if let Ok(entries) = std::fs::read_dir(&dir) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.is_file() {
-                                let _ = make_executable(&path);
+                        for entry in entries {
+                            if let Ok(entry) = entry {
+                                let path = entry.path();
+                                if path.is_file() {
+                                    // Log warning but don't fail installation
+                                    if let Err(e) = make_executable(&path) {
+                                        eprintln!(
+                                            "Warning: could not make {} executable: {}",
+                                            path.display(),
+                                            e
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

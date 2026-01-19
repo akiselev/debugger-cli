@@ -68,7 +68,7 @@ async fn spawn_adapter(path: &Path, args: &[String]) -> Result<Child> {
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped()) // Capture stderr for better error messages
         .spawn()
         .map_err(|e| Error::Internal(format!("Failed to spawn adapter: {}", e)))?;
 
@@ -109,19 +109,28 @@ async fn send_initialize(child: &mut Child) -> Result<DapCapabilities> {
 
     // Read response
     let mut reader = BufReader::new(stdout);
-    let mut header_line = String::new();
 
-    // Read Content-Length header
-    reader.read_line(&mut header_line).await?;
-    let content_length: usize = header_line
-        .trim()
-        .strip_prefix("Content-Length: ")
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| Error::Internal("Invalid DAP header".to_string()))?;
+    // Parse DAP headers - some adapters emit multiple headers (Content-Length, Content-Type)
+    let mut content_length: Option<usize> = None;
+    loop {
+        let mut header_line = String::new();
+        reader.read_line(&mut header_line).await?;
+        let trimmed = header_line.trim();
 
-    // Read empty line
-    let mut empty = String::new();
-    reader.read_line(&mut empty).await?;
+        // Empty line marks end of headers
+        if trimmed.is_empty() {
+            break;
+        }
+
+        // Parse Content-Length header
+        if let Some(len_str) = trimmed.strip_prefix("Content-Length:") {
+            content_length = len_str.trim().parse().ok();
+        }
+        // Ignore other headers (e.g., Content-Type)
+    }
+
+    let content_length = content_length
+        .ok_or_else(|| Error::Internal("Missing Content-Length in DAP response".to_string()))?;
 
     // Read body
     let mut body = vec![0u8; content_length];

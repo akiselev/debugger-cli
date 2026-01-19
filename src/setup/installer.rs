@@ -313,6 +313,19 @@ pub fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Extract a tar.xz archive
+pub fn extract_tar_xz(archive_path: &Path, dest_dir: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let decoder = xz2::read::XzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+
+    archive
+        .unpack(dest_dir)
+        .map_err(|e| Error::Internal(format!("Failed to extract tar.xz: {}", e)))?;
+
+    Ok(())
+}
+
 /// Make a file executable on Unix
 #[cfg(unix)]
 pub fn make_executable(path: &Path) -> Result<()> {
@@ -329,6 +342,7 @@ pub fn make_executable(_path: &Path) -> Result<()> {
 }
 
 /// Run a shell command and return output
+/// Note: This should only be used for trusted commands. For user input, use run_command_args.
 pub async fn run_command(command: &str) -> Result<String> {
     let output = if cfg!(windows) {
         tokio::process::Command::new("cmd")
@@ -352,7 +366,30 @@ pub async fn run_command(command: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Query GitHub API for latest release
+/// Run a command with explicit arguments (safe from shell injection)
+pub async fn run_command_args<S: AsRef<std::ffi::OsStr>>(
+    program: &Path,
+    args: &[S],
+) -> Result<String> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| Error::Internal(format!("Failed to run {}: {}", program.display(), e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Internal(format!(
+            "{} failed: {}",
+            program.display(),
+            stderr
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Query GitHub API for latest release with retry logic
 pub async fn get_github_release(repo: &str, version: Option<&str>) -> Result<GitHubRelease> {
     let client = reqwest::Client::new();
     let url = if let Some(v) = version {
@@ -364,27 +401,60 @@ pub async fn get_github_release(repo: &str, version: Option<&str>) -> Result<Git
         format!("https://api.github.com/repos/{}/releases/latest", repo)
     };
 
-    let response = client
-        .get(&url)
-        .header("User-Agent", "debugger-cli")
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await
-        .map_err(|e| Error::Internal(format!("GitHub API error: {}", e)))?;
+    // Retry with exponential backoff (1s, 2s, 4s)
+    let delays = [1, 2, 4];
+    let mut last_error = None;
 
-    if !response.status().is_success() {
-        return Err(Error::Internal(format!(
-            "GitHub API returned status {}",
-            response.status()
-        )));
+    for (attempt, delay) in std::iter::once(0).chain(delays.iter().copied()).enumerate() {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+        }
+
+        let response = match client
+            .get(&url)
+            .header("User-Agent", "debugger-cli")
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_error = Some(format!("GitHub API error: {}", e));
+                continue;
+            }
+        };
+
+        // Check for rate limiting
+        if response.status() == reqwest::StatusCode::FORBIDDEN
+            || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            last_error = Some(
+                "GitHub API rate limit exceeded. Set GITHUB_TOKEN env var to increase limit."
+                    .to_string(),
+            );
+            continue;
+        }
+
+        if !response.status().is_success() {
+            last_error = Some(format!("GitHub API returned status {}", response.status()));
+            // Don't retry on 404 or other client errors
+            if response.status().is_client_error() {
+                break;
+            }
+            continue;
+        }
+
+        let release: GitHubRelease = response
+            .json()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to parse GitHub response: {}", e)))?;
+
+        return Ok(release);
     }
 
-    let release: GitHubRelease = response
-        .json()
-        .await
-        .map_err(|e| Error::Internal(format!("Failed to parse GitHub response: {}", e)))?;
-
-    Ok(release)
+    Err(Error::Internal(
+        last_error.unwrap_or_else(|| "GitHub API request failed".to_string()),
+    ))
 }
 
 /// GitHub release information

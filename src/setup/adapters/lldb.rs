@@ -246,7 +246,7 @@ async fn install_via_package_manager(
 
 async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
     use crate::setup::installer::{
-        arch_str, download_file, extract_tar_gz, get_github_release, platform_str,
+        arch_str, download_file, extract_tar_gz, extract_tar_xz, get_github_release, platform_str,
         write_version_file,
     };
 
@@ -284,7 +284,12 @@ async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
     download_file(&asset.browser_download_url, &archive_path).await?;
 
     println!("Extracting...");
-    extract_tar_gz(&archive_path, temp_dir.path())?;
+    // Use appropriate extractor based on file extension
+    if asset.name.ends_with(".tar.xz") {
+        extract_tar_xz(&archive_path, temp_dir.path())?;
+    } else {
+        extract_tar_gz(&archive_path, temp_dir.path())?;
+    }
 
     // Find the extracted directory
     let extracted_dir = std::fs::read_dir(temp_dir.path())?

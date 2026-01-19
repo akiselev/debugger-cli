@@ -628,7 +628,13 @@ async fn update_config(debugger: &str, path: &std::path::Path, args: &[String]) 
     let mut config: toml::Table = if content.is_empty() {
         toml::Table::new()
     } else {
-        content.parse().unwrap_or_else(|_| toml::Table::new())
+        content.parse().map_err(|e| {
+            crate::common::Error::ConfigParse(format!(
+                "Failed to parse {}: {}",
+                config_file.display(),
+                e
+            ))
+        })?
     };
 
     // Ensure adapters section exists
@@ -639,7 +645,7 @@ async fn update_config(debugger: &str, path: &std::path::Path, args: &[String]) 
     let adapters = config
         .get_mut("adapters")
         .and_then(|v| v.as_table_mut())
-        .unwrap();
+        .expect("Expected 'adapters' to be a TOML table");
 
     // Create adapter entry
     let mut adapter_table = toml::Table::new();
