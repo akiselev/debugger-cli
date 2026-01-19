@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::common::{config::Config, error::IpcError, Error, Result};
 use crate::dap::Event;
 use crate::ipc::protocol::{
-    Command, ContextResult, EvaluateContext, EvaluateResult, Response,
+    BreakpointLocation, Command, ContextResult, EvaluateContext, EvaluateResult, Response,
     SourceLine, StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo,
 };
 
@@ -84,8 +84,18 @@ async fn handle_command_inner(
         }
 
         Command::Restart => {
-            // TODO: Implement restart
-            Err(Error::Internal("Restart not yet implemented".to_string()))
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+
+            // Check if adapter supports restart
+            if sess.capabilities().supports_restart_request {
+                sess.restart().await?;
+                Ok(json!({ "status": "restarted" }))
+            } else {
+                // Return helpful error message
+                Err(Error::Internal(
+                    "Debug adapter does not support restart. Use 'debugger stop' then 'debugger start' manually.".to_string()
+                ))
+            }
         }
 
         Command::Status => {
@@ -121,6 +131,28 @@ async fn handle_command_inner(
             hit_count,
         } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+
+            // Check capabilities before using advanced features
+            if matches!(location, BreakpointLocation::Function { .. }) {
+                if !sess.supports_function_breakpoints() {
+                    return Err(Error::Internal(
+                        "Debug adapter does not support function breakpoints. Use file:line format instead.".to_string()
+                    ));
+                }
+            }
+
+            if condition.is_some() && !sess.supports_conditional_breakpoints() {
+                return Err(Error::Internal(
+                    "Debug adapter does not support conditional breakpoints.".to_string()
+                ));
+            }
+
+            if hit_count.is_some() && !sess.supports_hit_conditional_breakpoints() {
+                return Err(Error::Internal(
+                    "Debug adapter does not support hit count conditions.".to_string()
+                ));
+            }
+
             let info = sess.add_breakpoint(location, condition, hit_count).await?;
             Ok(serde_json::to_value(info)?)
         }
@@ -148,18 +180,15 @@ async fn handle_command_inner(
         }
 
         Command::BreakpointEnable { id } => {
-            // TODO: Implement enable/disable
-            Err(Error::Internal(format!(
-                "Enable breakpoint {} not yet implemented",
-                id
-            )))
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            sess.enable_breakpoint(id).await?;
+            Ok(json!({ "enabled": id }))
         }
 
         Command::BreakpointDisable { id } => {
-            Err(Error::Internal(format!(
-                "Disable breakpoint {} not yet implemented",
-                id
-            )))
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            sess.disable_breakpoint(id).await?;
+            Ok(json!({ "disabled": id }))
         }
 
         // === Execution Control ===
@@ -290,13 +319,29 @@ async fn handle_command_inner(
         }
 
         Command::ThreadSelect { id } => {
-            // TODO: Track selected thread
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            sess.select_thread(id)?;
             Ok(json!({ "selected": id }))
         }
 
         Command::FrameSelect { number } => {
-            // TODO: Track selected frame
-            Ok(json!({ "selected": number }))
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            let frame = sess.select_frame(number).await?;
+            Ok(create_frame_response(&frame, number))
+        }
+
+        Command::FrameUp => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            let frame = sess.frame_up().await?;
+            let index = sess.get_current_frame_index();
+            Ok(create_frame_response(&frame, index))
+        }
+
+        Command::FrameDown => {
+            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
+            let frame = sess.frame_down().await?;
+            let index = sess.get_current_frame_index();
+            Ok(create_frame_response(&frame, index))
         }
 
         // === Context ===
@@ -420,6 +465,22 @@ async fn handle_command_inner(
             Ok(json!({ "shutdown": true }))
         }
     }
+}
+
+/// Create a JSON response for frame navigation commands
+fn create_frame_response(frame: &crate::dap::StackFrame, index: usize) -> serde_json::Value {
+    let frame_info = StackFrameInfo {
+        id: frame.id,
+        name: frame.name.clone(),
+        source: frame.source.as_ref().and_then(|s| s.path.clone()),
+        line: Some(frame.line),
+        column: Some(frame.column),
+    };
+
+    json!({
+        "selected": index,
+        "frame": frame_info
+    })
 }
 
 /// Read source file and return lines around the current position

@@ -3,15 +3,9 @@
 //! This CLI tool uses the Debug Adapter Protocol (DAP) to provide debugging
 //! capabilities through a simple command-line interface optimized for LLM agents.
 
-mod cli;
-mod commands;
-mod common;
-mod daemon;
-mod dap;
-mod ipc;
-
 use clap::Parser;
-use commands::Commands;
+use debugger::{cli, daemon};
+use debugger::commands::Commands;
 
 #[derive(Parser)]
 #[command(name = "debugger", about = "LLM-friendly debugger CLI")]

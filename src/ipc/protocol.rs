@@ -167,6 +167,12 @@ pub enum Command {
     /// Select stack frame
     FrameSelect { number: usize },
 
+    /// Move up the stack (to caller)
+    FrameUp,
+
+    /// Move down the stack (toward current frame)
+    FrameDown,
+
     // === Context ===
     /// Get current position with source context
     Context { lines: usize },

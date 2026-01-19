@@ -414,13 +414,16 @@ pub async fn dispatch(command: Commands) -> Result<()> {
         }
 
         Commands::Up => {
-            // TODO: Track current frame
-            println!("Frame navigation not yet implemented");
+            let mut client = DaemonClient::connect().await?;
+            let result = client.send_command(Command::FrameUp).await?;
+            print_frame_nav_result(&result);
             Ok(())
         }
 
         Commands::Down => {
-            println!("Frame navigation not yet implemented");
+            let mut client = DaemonClient::connect().await?;
+            let result = client.send_command(Command::FrameDown).await?;
+            print_frame_nav_result(&result);
             Ok(())
         }
 
@@ -538,6 +541,22 @@ pub async fn dispatch(command: Commands) -> Result<()> {
             println!("Program restarted");
             Ok(())
         }
+    }
+}
+
+/// Print the result of a frame navigation command (up/down)
+fn print_frame_nav_result(result: &serde_json::Value) {
+    let frame_index = result["selected"].as_u64().unwrap_or(0);
+
+    if let Ok(frame_info) = serde_json::from_value::<StackFrameInfo>(result["frame"].clone()) {
+        let source = frame_info.source.as_deref().unwrap_or("?");
+        let line = frame_info
+            .line
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        println!("#{} {} at {}:{}", frame_index, frame_info.name, source, line);
+    } else {
+        println!("Switched to frame {}", frame_index);
     }
 }
 
