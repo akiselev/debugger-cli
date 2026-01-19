@@ -2,40 +2,59 @@
 //!
 //! This module handles the communication with DAP adapters like lldb-dap,
 //! including the initialization sequence and request/response handling.
+//!
+//! ## Architecture
+//!
+//! The DapClient uses a background reader task to continuously read from the
+//! adapter's stdout. This ensures that events (stopped, output, etc.) are
+//! captured immediately rather than only during request/response cycles.
+//!
+//! ```text
+//! [DAP Adapter] --stdout--> [Reader Task] --events--> [event_tx channel]
+//!                                        --responses-> [response channels]
+//! [DapClient]   --stdin-->  [DAP Adapter]
+//! ```
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{BufReader, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::common::{Error, Result};
 
 use super::codec;
 use super::types::*;
 
+/// Pending response waiters, keyed by request sequence number
+type PendingResponses = Arc<Mutex<HashMap<i64, oneshot::Sender<std::result::Result<ResponseMessage, Error>>>>>;
+
 /// DAP client for communicating with a debug adapter
 pub struct DapClient {
     /// Adapter subprocess
     adapter: Child,
-    /// Buffered reader for adapter stdout
-    reader: BufReader<ChildStdout>,
     /// Buffered writer for adapter stdin
     writer: BufWriter<ChildStdin>,
     /// Sequence number for requests
     seq: AtomicI64,
     /// Adapter capabilities (populated after initialize)
     pub capabilities: Capabilities,
-    /// Pending requests waiting for responses
-    pending: HashMap<i64, oneshot::Sender<ResponseMessage>>,
-    /// Channel for events
+    /// Pending response waiters
+    pending: PendingResponses,
+    /// Channel for events (to session)
     event_tx: mpsc::UnboundedSender<Event>,
     /// Receiver for events (given to session)
     event_rx: Option<mpsc::UnboundedReceiver<Event>>,
+    /// Handle to the background reader task
+    reader_task: Option<tokio::task::JoinHandle<()>>,
+    /// Channel to signal reader task to stop
+    shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl DapClient {
@@ -64,17 +83,128 @@ impl DapClient {
         })?;
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let pending: PendingResponses = Arc::new(Mutex::new(HashMap::new()));
+
+        // Spawn background reader task
+        let reader_task = Self::spawn_reader_task(
+            stdout,
+            event_tx.clone(),
+            pending.clone(),
+            shutdown_rx,
+        );
 
         Ok(Self {
             adapter,
-            reader: BufReader::new(stdout),
             writer: BufWriter::new(stdin),
             seq: AtomicI64::new(1),
             capabilities: Capabilities::default(),
-            pending: HashMap::new(),
+            pending,
             event_tx,
             event_rx: Some(event_rx),
+            reader_task: Some(reader_task),
+            shutdown_tx: Some(shutdown_tx),
         })
+    }
+
+    /// Spawn the background reader task that continuously reads from adapter stdout
+    fn spawn_reader_task(
+        stdout: ChildStdout,
+        event_tx: mpsc::UnboundedSender<Event>,
+        pending: PendingResponses,
+        mut shutdown_rx: mpsc::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout);
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    // Check for shutdown signal
+                    _ = shutdown_rx.recv() => {
+                        tracing::debug!("Reader task received shutdown signal");
+                        break;
+                    }
+
+                    // Read next message
+                    result = codec::read_message(&mut reader) => {
+                        match result {
+                            Ok(json) => {
+                                eprintln!("DAP <<< {}", json);
+                                tracing::debug!("DAP message: {}", json);
+
+                                if let Err(e) = Self::process_message(&json, &event_tx, &pending).await {
+                                    tracing::error!("Error processing DAP message: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                // Check if this is an expected EOF (adapter exited)
+                                let is_eof = e.to_string().contains("unexpected eof")
+                                    || e.to_string().contains("UnexpectedEof");
+
+                                if is_eof {
+                                    tracing::info!("DAP adapter closed connection");
+                                } else {
+                                    tracing::error!("Error reading from DAP adapter: {}", e);
+                                }
+
+                                // Signal error to any pending requests
+                                let mut pending_guard = pending.lock().await;
+                                for (_, tx) in pending_guard.drain() {
+                                    let _ = tx.send(Err(Error::AdapterCrashed));
+                                }
+
+                                // Send terminated event to notify the session
+                                let _ = event_tx.send(Event::Terminated(None));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            tracing::debug!("Reader task exiting");
+        })
+    }
+
+    /// Process a single message from the adapter
+    async fn process_message(
+        json: &str,
+        event_tx: &mpsc::UnboundedSender<Event>,
+        pending: &PendingResponses,
+    ) -> Result<()> {
+        let msg: Value = serde_json::from_str(json)
+            .map_err(|e| Error::DapProtocol(format!("Invalid JSON: {}", e)))?;
+
+        let msg_type = msg
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        match msg_type {
+            "response" => {
+                let response: ResponseMessage = serde_json::from_value(msg)?;
+                let seq = response.request_seq;
+
+                let mut pending_guard = pending.lock().await;
+                if let Some(tx) = pending_guard.remove(&seq) {
+                    let _ = tx.send(Ok(response));
+                } else {
+                    tracing::warn!("Received response for unknown request seq {}", seq);
+                }
+            }
+            "event" => {
+                let event_msg: EventMessage = serde_json::from_value(msg)?;
+                let event = Event::from_message(&event_msg);
+                let _ = event_tx.send(event);
+            }
+            _ => {
+                tracing::warn!("Unknown message type: {}", msg_type);
+            }
+        }
+
+        Ok(())
     }
 
     /// Take the event receiver (can only be called once)
@@ -116,133 +246,129 @@ impl DapClient {
         Ok(seq)
     }
 
-    /// Read the next message from the adapter
-    async fn read_message(&mut self) -> Result<Value> {
-        let json = codec::read_message(&mut self.reader).await?;
-        eprintln!("DAP <<< {}", json);
-        tracing::debug!("DAP message: {}", json);
-        serde_json::from_str(&json).map_err(|e| Error::DapProtocol(format!("Invalid JSON: {}", e)))
-    }
-
-    /// Send a request and wait for the response
-    ///
-    /// This also processes any events that arrive while waiting
+    /// Send a request and wait for the response with timeout
     pub async fn request<T: serde::de::DeserializeOwned>(
         &mut self,
         command: &str,
         arguments: Option<Value>,
     ) -> Result<T> {
+        self.request_with_timeout(command, arguments, Duration::from_secs(30)).await
+    }
+
+    /// Send a request and wait for the response with configurable timeout
+    pub async fn request_with_timeout<T: serde::de::DeserializeOwned>(
+        &mut self,
+        command: &str,
+        arguments: Option<Value>,
+        timeout: Duration,
+    ) -> Result<T> {
         let seq = self.send_request(command, arguments).await?;
 
-        // Read messages until we get the response
-        loop {
-            let msg = self.read_message().await?;
+        // Create a oneshot channel to receive the response
+        let (tx, rx) = oneshot::channel();
 
-            let msg_type = msg
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+        {
+            let mut pending_guard = self.pending.lock().await;
+            pending_guard.insert(seq, tx);
+        }
 
-            match msg_type {
-                "response" => {
-                    let response: ResponseMessage = serde_json::from_value(msg)?;
+        // Wait for response with timeout
+        let response = tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| Error::Timeout(timeout.as_secs()))?
+            .map_err(|_| Error::AdapterCrashed)??;
 
-                    if response.request_seq == seq {
-                        if response.success {
-                            let body = response.body.unwrap_or(Value::Null);
-                            return serde_json::from_value(body).map_err(|e| {
-                                Error::DapProtocol(format!(
-                                    "Failed to parse {} response: {}",
-                                    command, e
-                                ))
-                            });
-                        } else {
-                            return Err(Error::dap_request_failed(
-                                command,
-                                &response.message.unwrap_or_else(|| "Unknown error".to_string()),
-                            ));
-                        }
-                    } else if let Some(tx) = self.pending.remove(&response.request_seq) {
-                        let _ = tx.send(response);
-                    }
-                }
-                "event" => {
-                    let event_msg: EventMessage = serde_json::from_value(msg)?;
-                    let event = Event::from_message(&event_msg);
-                    let _ = self.event_tx.send(event);
-                }
-                _ => {
-                    tracing::warn!("Unknown message type: {}", msg_type);
-                }
-            }
+        if response.success {
+            let body = response.body.unwrap_or(Value::Null);
+            serde_json::from_value(body).map_err(|e| {
+                Error::DapProtocol(format!(
+                    "Failed to parse {} response: {}",
+                    command, e
+                ))
+            })
+        } else {
+            Err(Error::dap_request_failed(
+                command,
+                &response.message.unwrap_or_else(|| "Unknown error".to_string()),
+            ))
         }
     }
 
-    /// Poll for the next event (non-blocking read of buffered events)
+    /// Poll for events - this is now non-blocking since events are already in the channel
+    /// Note: This method is kept for API compatibility but is no longer necessary
+    /// since the background reader task handles all event ingestion
     pub async fn poll_event(&mut self) -> Result<Option<Event>> {
-        // Try to read a message without blocking indefinitely
-        // This is a simple implementation - a full solution would use select! or similar
-        tokio::select! {
-            biased;
-            msg = self.read_message() => {
-                let msg = msg?;
-                let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
-
-                match msg_type {
-                    "event" => {
-                        let event_msg: EventMessage = serde_json::from_value(msg)?;
-                        Ok(Some(Event::from_message(&event_msg)))
-                    }
-                    "response" => {
-                        // Store for later retrieval
-                        let response: ResponseMessage = serde_json::from_value(msg)?;
-                        if let Some(tx) = self.pending.remove(&response.request_seq) {
-                            let _ = tx.send(response);
-                        }
-                        Ok(None)
-                    }
-                    _ => Ok(None)
-                }
-            }
-        }
+        // Events are now handled by the background reader task
+        // and delivered through the event channel.
+        // This method is kept for backward compatibility.
+        Ok(None)
     }
 
     /// Initialize the debug adapter
     pub async fn initialize(&mut self, adapter_id: &str) -> Result<Capabilities> {
+        self.initialize_with_timeout(adapter_id, Duration::from_secs(10)).await
+    }
+
+    /// Initialize the debug adapter with configurable timeout
+    pub async fn initialize_with_timeout(
+        &mut self,
+        adapter_id: &str,
+        timeout: Duration,
+    ) -> Result<Capabilities> {
         let args = InitializeArguments {
             adapter_id: adapter_id.to_string(),
             ..Default::default()
         };
 
         let caps: Capabilities = self
-            .request("initialize", Some(serde_json::to_value(&args)?))
+            .request_with_timeout("initialize", Some(serde_json::to_value(&args)?), timeout)
             .await?;
 
         self.capabilities = caps.clone();
         Ok(caps)
     }
 
-    /// Wait for the initialized event
+    /// Wait for the initialized event with timeout
+    ///
+    /// This method waits for the initialized event which comes through the event channel.
+    /// It's called before the session takes the event receiver.
     pub async fn wait_initialized(&mut self) -> Result<()> {
-        loop {
-            let msg = self.read_message().await?;
+        self.wait_initialized_with_timeout(Duration::from_secs(30)).await
+    }
 
-            let msg_type = msg
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+    /// Wait for the initialized event with configurable timeout
+    pub async fn wait_initialized_with_timeout(&mut self, timeout: Duration) -> Result<()> {
+        // The event receiver is typically taken by the session after initialization,
+        // but wait_initialized is called before that, so we should still have it
+        if let Some(ref mut rx) = self.event_rx {
+            let deadline = tokio::time::Instant::now() + timeout;
 
-            if msg_type == "event" {
-                let event_msg: EventMessage = serde_json::from_value(msg)?;
-                let event = Event::from_message(&event_msg);
-
-                if matches!(event, Event::Initialized) {
-                    return Ok(());
+            loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(Error::Timeout(timeout.as_secs()));
                 }
 
-                // Forward other events
-                let _ = self.event_tx.send(event);
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Some(event)) => {
+                        if matches!(event, Event::Initialized) {
+                            return Ok(());
+                        }
+                        // Re-send other events so they're not lost
+                        // (they'll be received when session takes the receiver)
+                        let _ = self.event_tx.send(event);
+                    }
+                    Ok(None) => {
+                        return Err(Error::AdapterCrashed);
+                    }
+                    Err(_) => {
+                        return Err(Error::Timeout(timeout.as_secs()));
+                    }
+                }
             }
+        } else {
+            // Event receiver already taken - this shouldn't happen in normal flow
+            Err(Error::Internal("Event receiver already taken before wait_initialized".to_string()))
         }
     }
 
@@ -442,13 +568,27 @@ impl DapClient {
         Ok(())
     }
 
-    /// Terminate the adapter process
+    /// Terminate the adapter process and clean up resources
     pub async fn terminate(&mut self) -> Result<()> {
         // Try graceful disconnect first
         let _ = self.disconnect(true).await;
 
+        // Signal the reader task to stop
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(()).await;
+        }
+
         // Wait a bit for clean shutdown
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Wait for reader task to finish
+        if let Some(task) = self.reader_task.take() {
+            // Give it a short timeout
+            let _ = tokio::time::timeout(
+                Duration::from_millis(500),
+                task,
+            ).await;
+        }
 
         // Force kill if still running
         let _ = self.adapter.kill().await;
@@ -460,10 +600,37 @@ impl DapClient {
     pub fn is_running(&mut self) -> bool {
         self.adapter.try_wait().ok().flatten().is_none()
     }
+
+    /// Restart the debug session (for adapters that support it)
+    pub async fn restart(&mut self, no_debug: bool) -> Result<()> {
+        if !self.capabilities.supports_restart_request {
+            return Err(Error::Internal(
+                "Debug adapter does not support restart".to_string(),
+            ));
+        }
+
+        let args = serde_json::json!({
+            "noDebug": no_debug
+        });
+
+        self.request::<Value>("restart", Some(args)).await?;
+        Ok(())
+    }
 }
 
 impl Drop for DapClient {
     fn drop(&mut self) {
+        // Signal shutdown to reader task (best-effort, can't await)
+        if let Some(tx) = self.shutdown_tx.take() {
+            // Use try_send since we can't await in drop
+            let _ = tx.try_send(());
+        }
+
+        // Abort the reader task if it's still running
+        if let Some(task) = self.reader_task.take() {
+            task.abort();
+        }
+
         // Try to kill the adapter on drop
         // This is best-effort since we can't await in drop
         let _ = self.adapter.start_kill();

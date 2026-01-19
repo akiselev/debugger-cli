@@ -253,6 +253,8 @@ pub struct Capabilities {
     #[serde(default)]
     pub supports_restart_frame: bool,
     #[serde(default)]
+    pub supports_restart_request: bool,
+    #[serde(default)]
     pub supports_goto_targets_request: bool,
     #[serde(default)]
     pub supports_step_in_targets_request: bool,

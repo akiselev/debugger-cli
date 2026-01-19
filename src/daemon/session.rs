@@ -95,20 +95,32 @@ pub struct DebugSession {
     next_bp_id: u32,
     /// Cached threads
     threads: Vec<Thread>,
+    /// Currently selected thread (may differ from stopped thread)
+    selected_thread: Option<i64>,
     /// Currently stopped thread
     stopped_thread: Option<i64>,
     /// Reason for last stop
     stopped_reason: Option<String>,
     /// Hit breakpoint IDs from last stop
     hit_breakpoints: Vec<u32>,
+    /// Current frame index (0 = top of stack)
+    current_frame_index: usize,
     /// Current frame ID (for variable inspection)
     current_frame: Option<i64>,
+    /// Cached stack frames for current stop
+    cached_frames: Vec<StackFrame>,
     /// Output buffer
     output_buffer: VecDeque<OutputEvent>,
     /// Maximum output buffer size
     max_output_events: usize,
+    /// Maximum output buffer bytes
+    max_output_bytes: usize,
+    /// Current output buffer byte count
+    current_output_bytes: usize,
     /// Exit code if program exited
     exit_code: Option<i32>,
+    /// DAP request timeout
+    dap_request_timeout: std::time::Duration,
 }
 
 impl DebugSession {
@@ -135,8 +147,12 @@ impl DebugSession {
             .take_event_receiver()
             .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
 
-        // Initialize the adapter
-        let capabilities = client.initialize(&adapter_name).await?;
+        // Get configured timeouts
+        let init_timeout = std::time::Duration::from_secs(config.timeouts.dap_initialize_secs);
+        let request_timeout = std::time::Duration::from_secs(config.timeouts.dap_request_secs);
+
+        // Initialize the adapter with timeout
+        let capabilities = client.initialize_with_timeout(&adapter_name, init_timeout).await?;
 
         // Launch the program (DAP: launch must come before initialized event)
         let cwd = std::env::current_dir()
@@ -156,7 +172,7 @@ impl DebugSession {
             .await?;
 
         // Wait for initialized event (comes after launch per DAP spec)
-        client.wait_initialized().await?;
+        client.wait_initialized_with_timeout(request_timeout).await?;
 
         // Signal configuration done - this tells the adapter to start execution
         client.configuration_done().await?;
@@ -180,13 +196,19 @@ impl DebugSession {
             function_breakpoints: Vec::new(),
             next_bp_id: 1,
             threads: Vec::new(),
+            selected_thread: None,
             stopped_thread: None,
             stopped_reason: None,
             hit_breakpoints: Vec::new(),
+            current_frame_index: 0,
             current_frame: None,
+            cached_frames: Vec::new(),
             output_buffer: VecDeque::new(),
             max_output_events: config.output.max_events,
+            max_output_bytes: config.output.max_bytes_mb * 1024 * 1024,
+            current_output_bytes: 0,
             exit_code: None,
+            dap_request_timeout: request_timeout,
         })
     }
 
@@ -210,7 +232,11 @@ impl DebugSession {
             .take_event_receiver()
             .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
 
-        let capabilities = client.initialize(&adapter_name).await?;
+        // Get configured timeouts
+        let init_timeout = std::time::Duration::from_secs(config.timeouts.dap_initialize_secs);
+        let request_timeout = std::time::Duration::from_secs(config.timeouts.dap_request_secs);
+
+        let capabilities = client.initialize_with_timeout(&adapter_name, init_timeout).await?;
 
         // Attach to the process (DAP: attach must come before initialized event)
         client
@@ -221,7 +247,7 @@ impl DebugSession {
             .await?;
 
         // Wait for initialized event (comes after attach per DAP spec)
-        client.wait_initialized().await?;
+        client.wait_initialized_with_timeout(request_timeout).await?;
 
         // Signal configuration done
         client.configuration_done().await?;
@@ -239,13 +265,19 @@ impl DebugSession {
             function_breakpoints: Vec::new(),
             next_bp_id: 1,
             threads: Vec::new(),
+            selected_thread: None,
             stopped_thread: None,
             stopped_reason: Some("attach".to_string()),
             hit_breakpoints: Vec::new(),
+            current_frame_index: 0,
             current_frame: None,
+            cached_frames: Vec::new(),
             output_buffer: VecDeque::new(),
             max_output_events: config.output.max_events,
+            max_output_bytes: config.output.max_bytes_mb * 1024 * 1024,
+            current_output_bytes: 0,
             exit_code: None,
+            dap_request_timeout: request_timeout,
         })
     }
 
@@ -299,7 +331,10 @@ impl DebugSession {
                 self.stopped_thread = body.thread_id;
                 self.stopped_reason = Some(body.reason.clone());
                 self.hit_breakpoints = body.hit_breakpoint_ids.clone();
-                self.current_frame = None; // Reset frame on stop
+                // Reset frame tracking on stop - user starts at top of stack
+                self.current_frame = None;
+                self.current_frame_index = 0;
+                self.cached_frames.clear();
                 tracing::debug!("Stopped: {:?}", body);
             }
             Event::Continued { thread_id, .. } => {
@@ -308,6 +343,8 @@ impl DebugSession {
                 self.stopped_reason = None;
                 self.hit_breakpoints.clear();
                 self.current_frame = None;
+                self.current_frame_index = 0;
+                self.cached_frames.clear();
                 tracing::debug!("Continued: thread {}", thread_id);
             }
             Event::Exited(body) => {
@@ -325,64 +362,112 @@ impl DebugSession {
             }
             Event::Thread(body) => {
                 tracing::debug!("Thread {}: {}", body.thread_id, body.reason);
+                // Update thread list if needed
+                if body.reason == "exited" {
+                    self.threads.retain(|t| t.id != body.thread_id);
+                }
             }
             Event::Breakpoint { reason, breakpoint } => {
                 tracing::debug!("Breakpoint {}: {:?}", reason, breakpoint);
+                // Update breakpoint status if we get change notifications
+                if let Some(bp_id) = breakpoint.id {
+                    self.update_breakpoint_from_event(bp_id as u32, breakpoint);
+                }
             }
             _ => {}
         }
     }
 
-    /// Buffer output for later retrieval
-    fn buffer_output(&mut self, category: &str, output: &str) {
-        if self.output_buffer.len() >= self.max_output_events {
-            self.output_buffer.pop_front();
+    /// Update breakpoint status from a breakpoint event
+    fn update_breakpoint_from_event(&mut self, _id: u32, bp: &dap::Breakpoint) {
+        // Try to match by line/source to update verification status
+        if let (Some(source), Some(line)) = (&bp.source, bp.line) {
+            if let Some(path) = &source.path {
+                let path = PathBuf::from(path);
+                if let Some(stored_bps) = self.source_breakpoints.get_mut(&path) {
+                    for stored in stored_bps.iter_mut() {
+                        if let BreakpointLocation::Line { line: stored_line, .. } = &stored.location {
+                            if *stored_line == line || stored.actual_line == Some(line) {
+                                stored.verified = bp.verified;
+                                stored.actual_line = bp.line;
+                                stored.message = bp.message.clone();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    /// Buffer output for later retrieval
+    ///
+    /// Enforces both max_output_events and max_output_bytes limits
+    fn buffer_output(&mut self, category: &str, output: &str) {
+        let output_bytes = output.len();
+
+        // Enforce byte limit - remove oldest entries until we have space
+        while self.current_output_bytes + output_bytes > self.max_output_bytes
+            && !self.output_buffer.is_empty()
+        {
+            if let Some(removed) = self.output_buffer.pop_front() {
+                self.current_output_bytes = self.current_output_bytes.saturating_sub(removed.output.len());
+            }
+        }
+
+        // Enforce event count limit
+        while self.output_buffer.len() >= self.max_output_events && !self.output_buffer.is_empty() {
+            if let Some(removed) = self.output_buffer.pop_front() {
+                self.current_output_bytes = self.current_output_bytes.saturating_sub(removed.output.len());
+            }
+        }
+
+        // Add the new output
         self.output_buffer.push_back(OutputEvent {
             category: category.to_string(),
             output: output.to_string(),
             timestamp: std::time::Instant::now(),
         });
+        self.current_output_bytes += output_bytes;
     }
 
     /// Wait for the program to stop
+    ///
+    /// This method waits for a stop event (Stopped, Exited, or Terminated) to arrive
+    /// through the event channel. Since the background reader task in DapClient
+    /// continuously reads events from the adapter, we just need to wait on the channel.
     pub async fn wait_stopped(&mut self, timeout_secs: u64) -> Result<Event> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
-            // Check for timeout
-            if std::time::Instant::now() >= deadline {
+            // Calculate remaining time
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
                 return Err(Error::AwaitTimeout(timeout_secs));
             }
 
-            // Process events with a short timeout
-            tokio::select! {
-                event = self.events_rx.recv() => {
-                    if let Some(event) = event {
-                        self.handle_event(&event);
+            // Wait for next event with timeout
+            match tokio::time::timeout(remaining, self.events_rx.recv()).await {
+                Ok(Some(event)) => {
+                    self.handle_event(&event);
 
-                        match &event {
-                            Event::Stopped(_) | Event::Exited(_) | Event::Terminated(_) => {
-                                return Ok(event);
-                            }
-                            _ => {}
+                    match &event {
+                        Event::Stopped(_) | Event::Exited(_) | Event::Terminated(_) => {
+                            return Ok(event);
                         }
-                    } else {
-                        // Channel closed - adapter crashed
-                        return Err(Error::AdapterCrashed);
+                        _ => {
+                            // Continue waiting for stop event
+                        }
                     }
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    // Poll for events from client
-                    if let Ok(Some(event)) = self.client.poll_event().await {
-                        self.handle_event(&event);
-                        match &event {
-                            Event::Stopped(_) | Event::Exited(_) | Event::Terminated(_) => {
-                                return Ok(event);
-                            }
-                            _ => {}
-                        }
-                    }
+                Ok(None) => {
+                    // Channel closed - adapter crashed or terminated
+                    return Err(Error::AdapterCrashed);
+                }
+                Err(_) => {
+                    // Timeout elapsed
+                    return Err(Error::AwaitTimeout(timeout_secs));
                 }
             }
         }
@@ -826,6 +911,165 @@ impl DebugSession {
         Ok(())
     }
 
+    /// Restart the debug session
+    ///
+    /// This either uses the DAP restart request (if supported) or stops
+    /// and relaunches the program.
+    pub async fn restart(&mut self, config: &Config) -> Result<()> {
+        // Check if adapter supports restart
+        if self.capabilities.supports_restart_request {
+            self.client.restart(false).await?;
+            self.state = SessionState::Running;
+            Ok(())
+        } else {
+            // Manual restart: stop and relaunch
+            // Store launch parameters
+            let program = self.program.clone();
+            let args = self.args.clone();
+            let adapter = self.adapter_name.clone();
+
+            // Stop current session
+            self.stop().await?;
+
+            // Relaunch - this is complex because we need to reinitialize
+            // For now, return an error indicating manual restart is needed
+            Err(Error::Internal(
+                "Adapter does not support restart. Use 'debugger stop' then 'debugger start' manually.".to_string()
+            ))
+        }
+    }
+
+    /// Select a thread for debugging operations
+    pub fn select_thread(&mut self, thread_id: i64) -> Result<()> {
+        // Verify thread exists
+        if !self.threads.iter().any(|t| t.id == thread_id) {
+            // Thread list might be stale, but we'll allow selection anyway
+            // The next operation will fail with a clearer error if invalid
+        }
+
+        self.selected_thread = Some(thread_id);
+        // Reset frame selection when switching threads
+        self.current_frame_index = 0;
+        self.current_frame = None;
+        self.cached_frames.clear();
+
+        Ok(())
+    }
+
+    /// Get the currently selected thread (for UI display)
+    pub fn get_selected_thread(&self) -> Option<i64> {
+        self.selected_thread.or(self.stopped_thread)
+    }
+
+    /// Select a stack frame by index (0 = top/innermost)
+    pub async fn select_frame(&mut self, frame_index: usize) -> Result<StackFrame> {
+        self.ensure_stopped()?;
+
+        // Fetch frames if not cached or if requesting beyond cache
+        if self.cached_frames.is_empty() || frame_index >= self.cached_frames.len() {
+            let thread_id = self.get_thread_id().await?;
+            // Fetch enough frames to include the requested one
+            let needed = (frame_index + 1).max(20);
+            self.cached_frames = self.client.stack_trace(thread_id, needed as i64).await?;
+        }
+
+        if frame_index >= self.cached_frames.len() {
+            return Err(Error::FrameNotFound(frame_index));
+        }
+
+        self.current_frame_index = frame_index;
+        self.current_frame = Some(self.cached_frames[frame_index].id);
+
+        Ok(self.cached_frames[frame_index].clone())
+    }
+
+    /// Move up the stack (to caller frame)
+    pub async fn frame_up(&mut self) -> Result<StackFrame> {
+        let new_index = self.current_frame_index + 1;
+        self.select_frame(new_index).await
+    }
+
+    /// Move down the stack (toward innermost/current frame)
+    pub async fn frame_down(&mut self) -> Result<StackFrame> {
+        if self.current_frame_index == 0 {
+            return Err(Error::FrameNotFound(0));
+        }
+        let new_index = self.current_frame_index - 1;
+        self.select_frame(new_index).await
+    }
+
+    /// Get current frame index
+    pub fn get_current_frame_index(&self) -> usize {
+        self.current_frame_index
+    }
+
+    /// Enable a breakpoint
+    pub async fn enable_breakpoint(&mut self, id: u32) -> Result<()> {
+        self.set_breakpoint_enabled(id, true).await
+    }
+
+    /// Disable a breakpoint
+    pub async fn disable_breakpoint(&mut self, id: u32) -> Result<()> {
+        self.set_breakpoint_enabled(id, false).await
+    }
+
+    /// Set breakpoint enabled state
+    async fn set_breakpoint_enabled(&mut self, id: u32, enabled: bool) -> Result<()> {
+        // Find and update the breakpoint
+        let mut file_to_update = None;
+        let mut is_function_bp = false;
+
+        for (file, bps) in &mut self.source_breakpoints {
+            if let Some(bp) = bps.iter_mut().find(|bp| bp.id == id) {
+                bp.enabled = enabled;
+                file_to_update = Some(file.clone());
+                break;
+            }
+        }
+
+        if file_to_update.is_none() {
+            if let Some(bp) = self.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
+                bp.enabled = enabled;
+                is_function_bp = true;
+            } else {
+                return Err(Error::BreakpointNotFound { id });
+            }
+        }
+
+        // Re-send breakpoints to adapter
+        if let Some(file) = file_to_update {
+            let source_bps = self.collect_source_breakpoints(&file);
+            let results = self.client.set_breakpoints(&file, source_bps).await?;
+            self.update_source_breakpoint_status(&file, &results);
+        } else if is_function_bp {
+            let func_bps = self.collect_function_breakpoints();
+            let results = self.client.set_function_breakpoints(func_bps).await?;
+            self.update_function_breakpoint_status(&results);
+        }
+
+        Ok(())
+    }
+
+    /// Get adapter capabilities
+    pub fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+
+    /// Check if adapter supports a capability before using it
+    pub fn supports_function_breakpoints(&self) -> bool {
+        self.capabilities.supports_function_breakpoints
+    }
+
+    /// Check if adapter supports conditional breakpoints
+    pub fn supports_conditional_breakpoints(&self) -> bool {
+        self.capabilities.supports_conditional_breakpoints
+    }
+
+    /// Check if adapter supports hit conditional breakpoints
+    pub fn supports_hit_conditional_breakpoints(&self) -> bool {
+        self.capabilities.supports_hit_conditional_breakpoints
+    }
+
     /// Ensure we're in stopped state for inspection commands
     fn ensure_stopped(&self) -> Result<()> {
         match self.state {
@@ -837,8 +1081,14 @@ impl DebugSession {
         }
     }
 
-    /// Get a thread ID (preferring the stopped thread)
+    /// Get a thread ID (preferring selected > stopped > first)
     async fn get_thread_id(&mut self) -> Result<i64> {
+        // Prefer explicitly selected thread
+        if let Some(id) = self.selected_thread {
+            return Ok(id);
+        }
+
+        // Fall back to stopped thread
         if let Some(id) = self.stopped_thread {
             return Ok(id);
         }

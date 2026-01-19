@@ -1,9 +1,17 @@
 [package]
 name = "debugger"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "LLM-friendly debugger CLI using the Debug Adapter Protocol"
 license = "MIT"
+
+[[bin]]
+name = "debugger"
+path = "src/main.rs"
+
+[lib]
+name = "debugger"
+path = "src/lib.rs"
 
 [dependencies]
 # Async runtime
@@ -34,6 +42,9 @@ libc = "0.2"
 which = "7"
 directories = "5"
 toml = "0.8"
+
+[dev-dependencies]
+which = "7"
 
 [profile.release]
 strip = true

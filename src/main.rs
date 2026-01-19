@@ -3,14 +3,8 @@
 //! This CLI tool uses the Debug Adapter Protocol (DAP) to provide debugging
 //! capabilities through a simple command-line interface optimized for LLM agents.
 
-mod cli;
-mod commands;
-mod common;
-mod daemon;
-mod dap;
-mod ipc;
-
 use clap::Parser;
+use debugger::{cli, commands, daemon};
 use commands::Commands;
 
 #[derive(Parser)]
