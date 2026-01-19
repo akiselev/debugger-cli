@@ -365,6 +365,10 @@ impl DebugSession {
                 // Update thread list if needed
                 if body.reason == "exited" {
                     self.threads.retain(|t| t.id != body.thread_id);
+                    // Clear selected thread if it was the one that exited
+                    if self.selected_thread == Some(body.thread_id) {
+                        self.selected_thread = None;
+                    }
                 }
             }
             Event::Breakpoint { reason, breakpoint } => {
@@ -402,8 +406,23 @@ impl DebugSession {
 
     /// Buffer output for later retrieval
     ///
-    /// Enforces both max_output_events and max_output_bytes limits
+    /// Enforces both max_output_events and max_output_bytes limits.
+    /// If a single output message exceeds max_output_bytes, it is truncated.
     fn buffer_output(&mut self, category: &str, output: &str) {
+        // Truncate oversized messages to prevent exceeding limits
+        let output = if output.len() > self.max_output_bytes {
+            tracing::warn!(
+                "Output message ({} bytes) exceeds max buffer size ({} bytes), truncating",
+                output.len(),
+                self.max_output_bytes
+            );
+            // Truncate to fit, trying to break at a char boundary
+            let truncated: String = output.chars().take(self.max_output_bytes).collect();
+            truncated
+        } else {
+            output.to_string()
+        };
+
         let output_bytes = output.len();
 
         // Enforce byte limit - remove oldest entries until we have space
@@ -425,7 +444,7 @@ impl DebugSession {
         // Add the new output
         self.output_buffer.push_back(OutputEvent {
             category: category.to_string(),
-            output: output.to_string(),
+            output,
             timestamp: std::time::Instant::now(),
         });
         self.current_output_bytes += output_bytes;
@@ -911,40 +930,34 @@ impl DebugSession {
         Ok(())
     }
 
-    /// Restart the debug session
+    /// Restart the debug session using the DAP restart request.
     ///
-    /// This either uses the DAP restart request (if supported) or stops
-    /// and relaunches the program.
-    pub async fn restart(&mut self, config: &Config) -> Result<()> {
-        // Check if adapter supports restart
-        if self.capabilities.supports_restart_request {
-            self.client.restart(false).await?;
-            self.state = SessionState::Running;
-            Ok(())
-        } else {
-            // Manual restart: stop and relaunch
-            // Store launch parameters
-            let program = self.program.clone();
-            let args = self.args.clone();
-            let adapter = self.adapter_name.clone();
-
-            // Stop current session
-            self.stop().await?;
-
-            // Relaunch - this is complex because we need to reinitialize
-            // For now, return an error indicating manual restart is needed
-            Err(Error::Internal(
-                "Adapter does not support restart. Use 'debugger stop' then 'debugger start' manually.".to_string()
-            ))
-        }
+    /// Note: The caller (handler) should check `supports_restart_request` capability
+    /// before calling this method. If the adapter doesn't support restart, the
+    /// user should be instructed to use 'debugger stop' then 'debugger start'.
+    pub async fn restart(&mut self) -> Result<()> {
+        self.client.restart(false).await?;
+        self.state = SessionState::Running;
+        // Clear frame/stop state since we're restarting
+        self.stopped_thread = None;
+        self.stopped_reason = None;
+        self.current_frame = None;
+        self.current_frame_index = 0;
+        self.cached_frames.clear();
+        Ok(())
     }
 
     /// Select a thread for debugging operations
+    ///
+    /// Returns an error if the thread is not found in the current thread list.
+    /// Note: The thread list may be stale; call `get_threads()` first to refresh.
     pub fn select_thread(&mut self, thread_id: i64) -> Result<()> {
-        // Verify thread exists
+        // Verify thread exists in our known thread list
         if !self.threads.iter().any(|t| t.id == thread_id) {
-            // Thread list might be stale, but we'll allow selection anyway
-            // The next operation will fail with a clearer error if invalid
+            return Err(Error::Internal(format!(
+                "Thread {} not found. Use 'threads' command to see available threads.",
+                thread_id
+            )));
         }
 
         self.selected_thread = Some(thread_id);
@@ -992,7 +1005,7 @@ impl DebugSession {
     /// Move down the stack (toward innermost/current frame)
     pub async fn frame_down(&mut self) -> Result<StackFrame> {
         if self.current_frame_index == 0 {
-            return Err(Error::FrameNotFound(0));
+            return Err(Error::invalid_state("frame down", "already at innermost frame"));
         }
         let new_index = self.current_frame_index - 1;
         self.select_frame(new_index).await

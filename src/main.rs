@@ -4,8 +4,8 @@
 //! capabilities through a simple command-line interface optimized for LLM agents.
 
 use clap::Parser;
-use debugger::{cli, commands, daemon};
-use commands::Commands;
+use debugger::{cli, daemon};
+use debugger::commands::Commands;
 
 #[derive(Parser)]
 #[command(name = "debugger", about = "LLM-friendly debugger CLI")]

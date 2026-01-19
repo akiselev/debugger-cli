@@ -43,9 +43,6 @@ which = "7"
 directories = "5"
 toml = "0.8"
 
-[dev-dependencies]
-which = "7"
-
 [profile.release]
 strip = true
 lto = true

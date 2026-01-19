@@ -88,7 +88,7 @@ async fn handle_command_inner(
 
             // Check if adapter supports restart
             if sess.capabilities().supports_restart_request {
-                sess.restart(config).await?;
+                sess.restart().await?;
                 Ok(json!({ "status": "restarted" }))
             } else {
                 // Return helpful error message
@@ -327,57 +327,21 @@ async fn handle_command_inner(
         Command::FrameSelect { number } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
             let frame = sess.select_frame(number).await?;
-
-            let frame_info = StackFrameInfo {
-                id: frame.id,
-                name: frame.name.clone(),
-                source: frame.source.as_ref().and_then(|s| s.path.clone()),
-                line: Some(frame.line),
-                column: Some(frame.column),
-            };
-
-            Ok(json!({
-                "selected": number,
-                "frame": frame_info
-            }))
+            Ok(create_frame_response(&frame, number))
         }
 
         Command::FrameUp => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
             let frame = sess.frame_up().await?;
             let index = sess.get_current_frame_index();
-
-            let frame_info = StackFrameInfo {
-                id: frame.id,
-                name: frame.name.clone(),
-                source: frame.source.as_ref().and_then(|s| s.path.clone()),
-                line: Some(frame.line),
-                column: Some(frame.column),
-            };
-
-            Ok(json!({
-                "selected": index,
-                "frame": frame_info
-            }))
+            Ok(create_frame_response(&frame, index))
         }
 
         Command::FrameDown => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
             let frame = sess.frame_down().await?;
             let index = sess.get_current_frame_index();
-
-            let frame_info = StackFrameInfo {
-                id: frame.id,
-                name: frame.name.clone(),
-                source: frame.source.as_ref().and_then(|s| s.path.clone()),
-                line: Some(frame.line),
-                column: Some(frame.column),
-            };
-
-            Ok(json!({
-                "selected": index,
-                "frame": frame_info
-            }))
+            Ok(create_frame_response(&frame, index))
         }
 
         // === Context ===
@@ -501,6 +465,22 @@ async fn handle_command_inner(
             Ok(json!({ "shutdown": true }))
         }
     }
+}
+
+/// Create a JSON response for frame navigation commands
+fn create_frame_response(frame: &crate::dap::StackFrame, index: usize) -> serde_json::Value {
+    let frame_info = StackFrameInfo {
+        id: frame.id,
+        name: frame.name.clone(),
+        source: frame.source.as_ref().and_then(|s| s.path.clone()),
+        line: Some(frame.line),
+        column: Some(frame.column),
+    };
+
+    json!({
+        "selected": index,
+        "frame": frame_info
+    })
 }
 
 /// Read source file and return lines around the current position

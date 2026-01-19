@@ -131,8 +131,7 @@ impl DapClient {
                     result = codec::read_message(&mut reader) => {
                         match result {
                             Ok(json) => {
-                                eprintln!("DAP <<< {}", json);
-                                tracing::debug!("DAP message: {}", json);
+                                tracing::trace!("DAP <<< {}", json);
 
                                 if let Err(e) = Self::process_message(&json, &event_tx, &pending).await {
                                     tracing::error!("Error processing DAP message: {}", e);
@@ -140,8 +139,11 @@ impl DapClient {
                             }
                             Err(e) => {
                                 // Check if this is an expected EOF (adapter exited)
-                                let is_eof = e.to_string().contains("unexpected eof")
-                                    || e.to_string().contains("UnexpectedEof");
+                                // We check the error message string as a fallback for various error types
+                                let err_str = e.to_string().to_lowercase();
+                                let is_eof = err_str.contains("unexpected eof")
+                                    || err_str.contains("unexpectedeof")
+                                    || err_str.contains("end of file");
 
                                 if is_eof {
                                     tracing::info!("DAP adapter closed connection");
@@ -238,8 +240,7 @@ impl DapClient {
         };
 
         let json = serde_json::to_string(&request)?;
-        eprintln!("DAP >>> {}", json);
-        tracing::debug!("DAP request: {}", json);
+        tracing::trace!("DAP >>> {}", json);
 
         codec::write_message(&mut self.writer, &json).await?;
 
@@ -256,26 +257,65 @@ impl DapClient {
     }
 
     /// Send a request and wait for the response with configurable timeout
+    ///
+    /// Note: We register the pending response handler BEFORE sending the request
+    /// to avoid a race condition where a fast adapter response arrives before
+    /// we've set up the handler.
     pub async fn request_with_timeout<T: serde::de::DeserializeOwned>(
         &mut self,
         command: &str,
         arguments: Option<Value>,
         timeout: Duration,
     ) -> Result<T> {
-        let seq = self.send_request(command, arguments).await?;
+        let seq = self.next_seq();
 
-        // Create a oneshot channel to receive the response
+        // Build request with or without arguments field
+        let request = if let Some(ref args) = arguments {
+            serde_json::json!({
+                "seq": seq,
+                "type": "request",
+                "command": command,
+                "arguments": args
+            })
+        } else {
+            serde_json::json!({
+                "seq": seq,
+                "type": "request",
+                "command": command
+            })
+        };
+
+        // IMPORTANT: Register the pending response handler BEFORE sending the request
+        // to avoid race condition where fast adapter responds before we're ready
         let (tx, rx) = oneshot::channel();
-
         {
             let mut pending_guard = self.pending.lock().await;
             pending_guard.insert(seq, tx);
         }
 
+        // Now send the request
+        let json = serde_json::to_string(&request)?;
+        tracing::trace!("DAP >>> {}", json);
+
+        if let Err(e) = codec::write_message(&mut self.writer, &json).await {
+            // Remove the pending handler if send failed
+            let mut pending_guard = self.pending.lock().await;
+            pending_guard.remove(&seq);
+            return Err(e);
+        }
+
         // Wait for response with timeout
         let response = tokio::time::timeout(timeout, rx)
             .await
-            .map_err(|_| Error::Timeout(timeout.as_secs()))?
+            .map_err(|_| {
+                // Clean up pending handler on timeout
+                let pending = self.pending.clone();
+                tokio::spawn(async move {
+                    let mut pending_guard = pending.lock().await;
+                    pending_guard.remove(&seq);
+                });
+                Error::Timeout(timeout.as_secs())
+            })?
             .map_err(|_| Error::AdapterCrashed)??;
 
         if response.success {
@@ -337,6 +377,17 @@ impl DapClient {
     }
 
     /// Wait for the initialized event with configurable timeout
+    ///
+    /// ## Event Ordering Note
+    ///
+    /// This method consumes events from the channel until it sees `Initialized`.
+    /// Non-Initialized events are re-sent to the channel so they won't be lost.
+    /// This is safe because:
+    /// 1. The session hasn't taken the receiver yet (wait_initialized is called during setup)
+    /// 2. The re-sent events go back to the same unbounded channel
+    /// 3. The background reader task continues adding new events after our re-sent ones
+    ///
+    /// Events will be received in order: [re-sent events] + [new events from reader]
     pub async fn wait_initialized_with_timeout(&mut self, timeout: Duration) -> Result<()> {
         // The event receiver is typically taken by the session after initialization,
         // but wait_initialized is called before that, so we should still have it
@@ -354,8 +405,9 @@ impl DapClient {
                         if matches!(event, Event::Initialized) {
                             return Ok(());
                         }
-                        // Re-send other events so they're not lost
-                        // (they'll be received when session takes the receiver)
+                        // Re-send other events so they're not lost when session takes the receiver.
+                        // This maintains event ordering: these events arrived before Initialized,
+                        // so they'll be received first when the session starts processing.
                         let _ = self.event_tx.send(event);
                     }
                     Ok(None) => {
@@ -619,6 +671,18 @@ impl DapClient {
 }
 
 impl Drop for DapClient {
+    /// Best-effort cleanup on drop.
+    ///
+    /// ## Limitations
+    ///
+    /// Since we can't await in `drop()`, this is necessarily imperfect:
+    /// - `try_send` may fail if the shutdown channel is full (unlikely with capacity 1)
+    /// - `task.abort()` is immediate; the reader may be mid-operation
+    /// - `start_kill()` is non-blocking; the adapter may not exit immediately
+    ///
+    /// For graceful cleanup, prefer calling `terminate()` before dropping.
+    /// This Drop impl exists as a safety net to avoid leaking resources if
+    /// `terminate()` wasn't called.
     fn drop(&mut self) {
         // Signal shutdown to reader task (best-effort, can't await)
         if let Some(tx) = self.shutdown_tx.take() {
@@ -627,6 +691,7 @@ impl Drop for DapClient {
         }
 
         // Abort the reader task if it's still running
+        // Note: This is abrupt but necessary since we can't await graceful shutdown
         if let Some(task) = self.reader_task.take() {
             task.abort();
         }

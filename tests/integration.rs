@@ -126,8 +126,13 @@ impl TestContext {
                     .next()
                     .unwrap()
                     .to_string();
-                // Breakpoint goes on the NEXT line after the marker
-                markers.insert(marker_name, (line_num + 2) as u32);
+                // Calculate breakpoint line:
+                // - enumerate() gives 0-indexed line numbers
+                // - DAP uses 1-indexed line numbers, so add 1
+                // - We want the NEXT line after the marker comment, so add another 1
+                // - Total: line_num + 2
+                let breakpoint_line = (line_num as u32) + 2;
+                markers.insert(marker_name, breakpoint_line);
             }
         }
 
@@ -208,8 +213,17 @@ impl Drop for TestContext {
     fn drop(&mut self) {
         // Clean up daemon
         let _ = self.run_debugger(&["stop"]);
-        // Optionally clean up temp directory
-        // let _ = fs::remove_dir_all(&self.temp_dir);
+
+        // Clean up temp directory based on environment variable
+        // By default, preserve artifacts for debugging test failures
+        // Set PRESERVE_DEBUGGER_TEST_ARTIFACTS=0 (or "false"/"no") to clean up
+        let preserve = env::var("PRESERVE_DEBUGGER_TEST_ARTIFACTS")
+            .unwrap_or_else(|_| "1".to_string())
+            .to_ascii_lowercase();
+
+        if preserve == "0" || preserve == "false" || preserve == "no" {
+            let _ = fs::remove_dir_all(&self.temp_dir);
+        }
     }
 }
 

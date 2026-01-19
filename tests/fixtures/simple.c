@@ -1,5 +1,4 @@
 // Simple test program for debugger integration tests
-// BREAKPOINT_MARKER: main_start (line after this)
 #include <stdio.h>
 
 int add(int a, int b) {
