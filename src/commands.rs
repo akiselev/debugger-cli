@@ -163,6 +163,48 @@ pub enum Commands {
     /// [Hidden] Run in daemon mode - spawned automatically
     #[command(hide = true)]
     Daemon,
+
+    /// Install and manage debug adapters
+    Setup {
+        /// Debugger to install (e.g., lldb, codelldb, python, go)
+        debugger: Option<String>,
+
+        /// Install specific version
+        #[arg(long)]
+        version: Option<String>,
+
+        /// List available debuggers and their status
+        #[arg(long)]
+        list: bool,
+
+        /// Check installed debuggers
+        #[arg(long)]
+        check: bool,
+
+        /// Auto-install debuggers for detected project types
+        #[arg(long, name = "auto")]
+        auto_detect: bool,
+
+        /// Uninstall a debugger
+        #[arg(long)]
+        uninstall: bool,
+
+        /// Show installation path for a debugger
+        #[arg(long)]
+        path: bool,
+
+        /// Force reinstall even if already installed
+        #[arg(long)]
+        force: bool,
+
+        /// Show what would be installed without installing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
