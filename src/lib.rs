@@ -9,6 +9,7 @@ pub mod common;
 pub mod daemon;
 pub mod dap;
 pub mod ipc;
+pub mod setup;
 
 // Re-export commonly used types for tests
 pub use common::{Error, Result};

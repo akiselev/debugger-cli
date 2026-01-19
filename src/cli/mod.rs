@@ -11,6 +11,7 @@ use crate::ipc::protocol::{
     StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo,
 };
 use crate::ipc::DaemonClient;
+use crate::setup;
 
 /// Dispatch a CLI command
 pub async fn dispatch(command: Commands) -> Result<()> {
@@ -540,6 +541,33 @@ pub async fn dispatch(command: Commands) -> Result<()> {
             client.send_command(Command::Restart).await?;
             println!("Program restarted");
             Ok(())
+        }
+
+        Commands::Setup {
+            debugger,
+            version,
+            list,
+            check,
+            auto_detect,
+            uninstall,
+            path,
+            force,
+            dry_run,
+            json,
+        } => {
+            let opts = setup::SetupOptions {
+                debugger,
+                version,
+                list,
+                check,
+                auto_detect,
+                uninstall,
+                path,
+                force,
+                dry_run,
+                json,
+            };
+            setup::run(opts).await
         }
     }
 }

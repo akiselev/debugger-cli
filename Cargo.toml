@@ -43,6 +43,18 @@ which = "7"
 directories = "5"
 toml = "0.8"
 
+# Setup command - downloading and installation
+reqwest = { version = "0.12", features = ["json", "stream"] }
+zip = "2.2"
+tar = "0.4"
+flate2 = "1.0"
+indicatif = "0.17"
+semver = "1.0"
+tempfile = "3.14"
+os_info = "3.9"
+async-trait = "0.1"
+futures-util = "0.3"
+
 [profile.release]
 strip = true
 lto = true
