@@ -60,42 +60,109 @@ impl Daemon {
                 break;
             }
 
-            // Accept connections with timeout
-            tokio::select! {
-                accept_result = listener.accept() => {
-                    match accept_result {
-                        Ok(stream) => {
-                            self.last_activity = Instant::now();
-                            if let Err(e) = self.handle_client(stream).await {
-                                tracing::error!("Error handling client: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Accept error: {}", e);
-                        }
-                    }
-                }
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                    // Periodic wakeup to check idle timeout
-                    // Also process any pending events
-                    if let Some(session) = &mut self.session {
-                        if let Err(e) = session.process_events().await {
-                            tracing::warn!("Error processing events: {}", e);
-                        }
-                    }
-                }
+            // Accept connections with timeout, also handle signals
+            if self.run_select_loop(&listener).await? {
+                break;
             }
         }
 
         // Cleanup
+        tracing::info!("Cleaning up daemon resources");
         if let Some(mut session) = self.session.take() {
+            tracing::debug!("Stopping debug session");
             let _ = session.stop().await;
         }
 
         // Remove socket file
         paths::remove_socket()?;
+        tracing::info!("Daemon shutdown complete");
 
         Ok(())
+    }
+
+    /// Run one iteration of the select loop, returns true if should break
+    #[cfg(unix)]
+    async fn run_select_loop(
+        &mut self,
+        listener: &transport::platform::Listener,
+    ) -> Result<bool> {
+        use tokio::signal::unix::{signal, SignalKind};
+        
+        // Set up signal handlers (recreated each iteration to avoid lifetime issues)
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("Failed to create SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt())
+            .expect("Failed to create SIGINT handler");
+
+        tokio::select! {
+            // Handle SIGTERM (graceful shutdown)
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM, shutting down gracefully");
+                Ok(true)
+            }
+            // Handle SIGINT (Ctrl+C)
+            _ = sigint.recv() => {
+                tracing::info!("Received SIGINT (Ctrl+C), shutting down gracefully");
+                Ok(true)
+            }
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok(stream) => {
+                        self.last_activity = Instant::now();
+                        if let Err(e) = self.handle_client(stream).await {
+                            tracing::error!("Error handling client: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Accept error: {}", e);
+                    }
+                }
+                Ok(false)
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                // Periodic wakeup to check idle timeout
+                // Also process any pending events
+                if let Some(session) = &mut self.session {
+                    if let Err(e) = session.process_events().await {
+                        tracing::warn!("Error processing events: {}", e);
+                    }
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    /// Run one iteration of the select loop (Windows version)
+    #[cfg(not(unix))]
+    async fn run_select_loop(
+        &mut self,
+        listener: &transport::platform::Listener,
+    ) -> Result<bool> {
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok(stream) => {
+                        self.last_activity = Instant::now();
+                        if let Err(e) = self.handle_client(stream).await {
+                            tracing::error!("Error handling client: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Accept error: {}", e);
+                    }
+                }
+                Ok(false)
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                // Periodic wakeup to check idle timeout
+                if let Some(session) = &mut self.session {
+                    if let Err(e) = session.process_events().await {
+                        tracing::warn!("Error processing events: {}", e);
+                    }
+                }
+                Ok(false)
+            }
+        }
     }
 
     /// Handle a single client connection

@@ -431,6 +431,15 @@ impl DapClient {
         Ok(())
     }
 
+    /// Launch a program for debugging without waiting for response
+    /// 
+    /// Some debuggers (like debugpy) don't respond to launch until after
+    /// configurationDone is sent. This sends the launch request but doesn't
+    /// wait for the response.
+    pub async fn launch_no_wait(&mut self, args: LaunchArguments) -> Result<i64> {
+        self.send_request("launch", Some(serde_json::to_value(&args)?)).await
+    }
+
     /// Attach to a running process
     pub async fn attach(&mut self, args: AttachArguments) -> Result<()> {
         self.request::<Value>("attach", Some(serde_json::to_value(&args)?))

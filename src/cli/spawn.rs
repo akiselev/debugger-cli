@@ -41,15 +41,24 @@ async fn spawn_daemon() -> Result<()> {
     // Remove stale socket if it exists
     paths::remove_socket()?;
 
-    // Spawn detached process
+    // Spawn detached process with output redirected to /dev/null
+    // The daemon logs to its own log file, so we don't need terminal output
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        use std::fs::File;
+        
+        // Open /dev/null for stdout/stderr
+        let dev_null = File::open("/dev/null")
+            .map_err(|e| Error::Internal(format!("Failed to open /dev/null: {}", e)))?;
+        let dev_null_out = File::create("/dev/null")
+            .map_err(|e| Error::Internal(format!("Failed to open /dev/null for write: {}", e)))?;
+        
         std::process::Command::new(&exe_path)
             .arg("daemon")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
+            .stdin(std::process::Stdio::from(dev_null))
+            .stdout(std::process::Stdio::from(dev_null_out.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(dev_null_out))
             .process_group(0) // New process group (detach from terminal)
             .spawn()
             .map_err(|e| Error::Internal(format!("Failed to spawn daemon: {}", e)))?;

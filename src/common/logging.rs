@@ -41,11 +41,11 @@ pub fn init_cli() {
 /// 1. A log file at `~/.local/share/debugger-cli/logs/daemon.log`
 /// 2. stderr (inherited from spawning process for early errors)
 ///
-/// Log level controlled by `RUST_LOG`, default is DEBUG for daemon.
+/// Log level controlled by `RUST_LOG`, default is TRACE for daemon to capture DAP messages.
 pub fn init_daemon() -> Option<PathBuf> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        // Default to debug for daemon - we want to see what's happening
-        EnvFilter::new("debugger=debug,info")
+        // Default to trace for daemon - we want to see DAP messages
+        EnvFilter::new("debugger=trace,info")
     });
 
     // Try to set up file logging
