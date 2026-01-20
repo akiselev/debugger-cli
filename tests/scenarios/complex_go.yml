@@ -1,0 +1,121 @@
+# Complex Go Variable Verification Test
+# Tests local variable inspection, stepping into functions, and expression evaluation
+
+name: "Go Complex Variable Verification"
+description: "Verifies Go debugging with Delve: variables, types, stepping, and expressions"
+
+# Compile the test program with debug info (disable optimizations and inlining)
+setup:
+  - shell: "go build -gcflags='all=-N -l' -o tests/fixtures/test_simple_go tests/fixtures/simple.go"
+
+# Debug target configuration
+target:
+  program: "tests/fixtures/test_simple_go"
+  args: []
+  adapter: "go"
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set a breakpoint at main.main
+  - action: command
+    command: "break main.main"
+    expect:
+      success: true
+
+  # 2. Set a breakpoint in the add function
+  - action: command
+    command: "break main.add"
+    expect:
+      success: true
+
+  # 3. Continue to main
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+      file: "simple.go"
+
+  # 4. Step to initialize x
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 5. Step to initialize y  
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 6. Check local variables x and y
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        value_contains: "10"
+      - name: "y"
+        value_contains: "20"
+
+  # 7. Continue to add function breakpoint
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  # 8. Check function arguments in add
+  - action: inspect_locals
+    asserts:
+      - name: "a"
+        value_contains: "10"
+      - name: "b"
+        value_contains: "20"
+
+  # 9. Check the stack trace
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "main.add"
+      - index: 1
+        function: "main.main"
+
+  # 10. Step to compute result
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 11. Verify result variable
+  - action: inspect_locals
+    asserts:
+      - name: "result"
+        value_contains: "30"
+
+  # 12. Evaluate an expression
+  - action: evaluate
+    expression: "a * b"
+    expect:
+      result_contains: "200"
+
+  # 13. Continue to exit
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 15
+    expect:
+      reason: "exited"

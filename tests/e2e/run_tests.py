@@ -11,6 +11,7 @@ DEBUGGER_BIN = os.path.join(PROJECT_ROOT, "target", "release", "debugger")
 TEST_DIR = os.path.join(PROJECT_ROOT, "tests", "e2e")
 GCC = "gcc"
 RUSTC = "rustc"
+GO = "go"
 PYTHON = sys.executable
 
 def log(msg):
@@ -24,6 +25,12 @@ def compile_c(source, output):
 def compile_rust(source, output):
     cmd = [RUSTC, "-g", "-o", output, source]
     log(f"Compiling Rust: {' '.join(cmd)}")
+    subprocess.check_call(cmd)
+
+def compile_go(source, output):
+    # Disable optimizations and inlining for better debugging
+    cmd = [GO, "build", "-gcflags=all=-N -l", "-o", output, source]
+    log(f"Compiling Go: {' '.join(cmd)}")
     subprocess.check_call(cmd)
 
 def setup_config():
@@ -41,6 +48,10 @@ def setup_config():
 [adapters.debugpy]
 path = "{python_path}"
 args = ["-m", "debugpy.adapter"]
+
+[adapters.go]
+path = "dlv"
+args = ["dap"]
 
 [defaults]
 adapter = "lldb-dap"
@@ -260,6 +271,14 @@ def check_debugpy():
     except subprocess.CalledProcessError:
         return False
 
+def check_delve():
+    """Check if Delve (dlv) is available"""
+    try:
+        subprocess.check_call(["dlv", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
 def main():
     if not os.path.exists(DEBUGGER_BIN):
         log(f"Debugger binary not found at {DEBUGGER_BIN}. Please build release first.")
@@ -306,6 +325,18 @@ if __name__ == "__main__":
                 failed = True
         else:
             log("Skipping Python test (debugpy not found)")
+
+        # Test Go
+        if check_delve():
+            # First, check if hello_world.go exists
+            go_test_file = os.path.join(TEST_DIR, "hello_world.go")
+            if os.path.exists(go_test_file):
+                if not test_program("test_go", "hello_world.go", compile_go, "Hello from Go! Sum is 30", config_dir, ["--adapter", "go"]):
+                    failed = True
+            else:
+                log("Skipping Go test (hello_world.go not found)")
+        else:
+            log("Skipping Go test (dlv not found)")
 
         # Test Complex Python
         if check_debugpy():

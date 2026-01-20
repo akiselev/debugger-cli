@@ -1,0 +1,89 @@
+# Go Hello World Test
+# Tests Go debugging with Delve (dlv)
+
+name: "Go Hello World Test"
+description: "Verifies basic Go debugging functionality with Delve"
+
+# Compile the test program with debug info
+setup:
+  - shell: "go build -gcflags='all=-N -l' -o tests/e2e/test_go tests/e2e/hello_world.go"
+
+# Debug target configuration
+target:
+  program: "tests/e2e/test_go"
+  args: []
+  adapter: "go"
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set a breakpoint at main.main
+  - action: command
+    command: "break main.main"
+    expect:
+      success: true
+
+  # 2. Continue to the breakpoint
+  - action: command
+    command: "continue"
+
+  # 3. Wait for stop at breakpoint
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+      file: "hello_world.go"
+
+  # 4. Step over to initialize x
+  - action: command
+    command: "next"
+
+  # 5. Wait for step to complete
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 6. Step over to initialize y
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 7. Step over to initialize sum
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 8. Check local variables
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        value_contains: "10"
+      - name: "y"
+        value_contains: "20"
+      - name: "sum"
+        value_contains: "30"
+
+  # 9. Check stack trace
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "main.main"
+
+  # 10. Continue to exit
+  - action: command
+    command: "continue"
+
+  # 11. Wait for program exit
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"
