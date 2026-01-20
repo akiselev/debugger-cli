@@ -1,5 +1,9 @@
 # Go Hello World Test
 # Tests Go debugging with Delve (dlv)
+#
+# NOTE: Delve uses TCP-based DAP connections rather than stdin/stdout.
+# This test requires TCP-based DAP adapter support to be implemented.
+# Currently expected to fail until that feature is added.
 
 name: "Go Hello World Test"
 description: "Verifies basic Go debugging functionality with Delve"

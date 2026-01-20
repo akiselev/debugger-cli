@@ -118,11 +118,14 @@ jobs:
         continue-on-error: true
 
       - name: Run Go Hello World E2E Test
+        # Note: Delve (dlv) uses TCP-based DAP connection, which is not yet fully supported.
+        # These tests are expected to fail until TCP-based DAP adapter support is added.
         run: |
           ./target/release/debugger test tests/scenarios/hello_world_go.yml --verbose
         continue-on-error: true
 
       - name: Run Go Complex E2E Test
+        # Note: Delve (dlv) uses TCP-based DAP connection, which is not yet fully supported.
         run: |
           ./target/release/debugger test tests/scenarios/complex_go.yml --verbose
         continue-on-error: true

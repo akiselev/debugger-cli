@@ -1,5 +1,9 @@
 # Complex Go Variable Verification Test
 # Tests local variable inspection, stepping into functions, and expression evaluation
+#
+# NOTE: Delve uses TCP-based DAP connections rather than stdin/stdout.
+# This test requires TCP-based DAP adapter support to be implemented.
+# Currently expected to fail until that feature is added.
 
 name: "Go Complex Variable Verification"
 description: "Verifies Go debugging with Delve: variables, types, stepping, and expressions"
