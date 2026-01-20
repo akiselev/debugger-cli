@@ -10,7 +10,7 @@ setup:
 
 # Debug target configuration
 target:
-  program: "tests/e2e/test_go"
+  program: "../e2e/test_go"
   args: []
   adapter: "go"
   stop_on_entry: true

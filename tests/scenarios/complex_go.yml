@@ -10,7 +10,7 @@ setup:
 
 # Debug target configuration
 target:
-  program: "tests/fixtures/test_simple_go"
+  program: "../fixtures/test_simple_go"
   args: []
   adapter: "go"
   stop_on_entry: true
