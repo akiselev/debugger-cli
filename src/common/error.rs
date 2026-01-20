@@ -106,6 +106,10 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    // === Test Errors ===
+    #[error("Test assertion failed: {0}")]
+    TestAssertion(String),
+
     // === Internal Errors ===
     #[error("Internal error: {0}")]
     Internal(String),

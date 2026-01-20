@@ -2,7 +2,7 @@
 //!
 //! Dispatches CLI commands to the daemon and formats output.
 
-mod spawn;
+pub mod spawn;
 
 use crate::commands::{BreakpointCommands, Commands};
 use crate::common::{Error, Result};
@@ -12,6 +12,7 @@ use crate::ipc::protocol::{
 };
 use crate::ipc::DaemonClient;
 use crate::setup;
+use crate::testing;
 
 /// Dispatch a CLI command
 pub async fn dispatch(command: Commands) -> Result<()> {
@@ -624,6 +625,16 @@ pub async fn dispatch(command: Commands) -> Result<()> {
                 json,
             };
             setup::run(opts).await
+        }
+
+        Commands::Test { path, verbose } => {
+            let result = testing::run_scenario(&path, verbose).await?;
+
+            if result.passed {
+                std::process::exit(0);
+            } else {
+                std::process::exit(1);
+            }
         }
     }
 }

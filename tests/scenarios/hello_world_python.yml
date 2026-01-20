@@ -1,0 +1,59 @@
+# Python Hello World Test
+# Tests Python debugging with debugpy
+
+name: "Python Hello World Test"
+description: "Verifies basic Python debugging functionality"
+
+# No setup needed - Python doesn't require compilation
+
+# Debug target configuration
+target:
+  program: "tests/e2e/hello_world.py"
+  args: []
+  adapter: "debugpy"
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set a breakpoint
+  - action: command
+    command: "break hello_world.py:5"
+    expect:
+      success: true
+
+  # 2. Continue to the breakpoint
+  - action: command
+    command: "continue"
+
+  # 3. Wait for stop at breakpoint
+  - action: await
+    timeout: 15
+    expect:
+      reason: "breakpoint"
+      file: "hello_world.py"
+
+  # 4. Check local variables
+  - action: inspect_locals
+    asserts:
+      - name: "message"
+        value_contains: "Hello"
+
+  # 5. Step over
+  - action: command
+    command: "next"
+
+  # 6. Wait for step
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 7. Continue to exit
+  - action: command
+    command: "continue"
+
+  # 8. Wait for program exit
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

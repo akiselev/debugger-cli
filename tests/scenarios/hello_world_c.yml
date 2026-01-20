@@ -1,0 +1,57 @@
+# Simple C Program Test
+# Tests basic debugging functionality with a hello world program
+
+name: "C Hello World Test"
+description: "Verifies basic debugging functionality with a simple C program"
+
+# Compile the test program
+setup:
+  - shell: "gcc -g tests/e2e/hello_world.c -o tests/e2e/test_c"
+
+# Debug target configuration
+target:
+  program: "tests/e2e/test_c"
+  args: []
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set a breakpoint at main
+  - action: command
+    command: "break main"
+    expect:
+      success: true
+
+  # 2. Continue to the breakpoint
+  - action: command
+    command: "continue"
+
+  # 3. Wait for stop at breakpoint
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  # 4. Step over a line
+  - action: command
+    command: "next"
+
+  # 5. Wait for step to complete
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 6. Check locals are visible
+  - action: command
+    command: "locals"
+
+  # 7. Continue to exit
+  - action: command
+    command: "continue"
+
+  # 8. Wait for program exit
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

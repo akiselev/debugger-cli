@@ -220,6 +220,16 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Execute a test scenario defined in a YAML file
+    Test {
+        /// Path to the YAML test scenario file
+        path: PathBuf,
+
+        /// Verbose output
+        #[arg(long, short)]
+        verbose: bool,
+    },
 }
 
 #[derive(Subcommand)]

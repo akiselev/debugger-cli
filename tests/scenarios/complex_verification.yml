@@ -1,0 +1,83 @@
+# Complex Variable Verification Test
+# Tests local variable inspection and type checking
+
+name: "Complex Variable Verification"
+description: "Verifies local variables, types, and expression evaluation"
+
+# Compile the test program
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+# Debug target configuration
+target:
+  program: "tests/fixtures/test_simple_c"
+  args: []
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set a breakpoint
+  - action: command
+    command: "break main"
+    expect:
+      success: true
+
+  # 2. Continue to breakpoint
+  - action: command
+    command: "continue"
+
+  # 3. Wait for stop
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+      file: "simple.c"
+
+  # 4. Step to initialize variables
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+
+  # 5. Inspect local variables
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        type: "int"
+      - name: "y"
+        type: "int"
+
+  # 6. Evaluate an expression
+  - action: evaluate
+    expression: "x + y"
+    expect:
+      result_contains: ""  # Just verify it evaluates without error
+
+  # 7. Check stack
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "main"
+        file: "simple.c"
+
+  # 8. Continue to exit
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

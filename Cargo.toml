@@ -57,6 +57,10 @@ os_info = "3.9"
 async-trait = "0.1"
 futures-util = "0.3"
 
+# E2E testing
+serde_yaml = "0.9"
+colored = "2"
+
 [profile.release]
 strip = true
 lto = true
