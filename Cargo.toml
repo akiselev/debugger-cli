@@ -26,7 +26,8 @@ thiserror = "2"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "std"] }
+tracing-appender = "0.2"
 
 # CLI parsing
 clap = { version = "4", features = ["derive"] }

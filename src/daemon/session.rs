@@ -125,6 +125,7 @@ pub struct DebugSession {
 
 impl DebugSession {
     /// Create a new debug session by launching a program
+    #[tracing::instrument(skip(config), fields(adapter = %adapter_name.as_deref().unwrap_or("default")))]
     pub async fn launch(
         config: &Config,
         program: &Path,
@@ -138,44 +139,77 @@ impl DebugSession {
             Error::adapter_not_found(&adapter_name, &[&adapter_name])
         })?;
 
-        tracing::info!("Launching {} with adapter {}", program.display(), adapter_name);
+        tracing::info!(
+            program = %program.display(),
+            adapter = %adapter_name,
+            adapter_path = %adapter_config.path.display(),
+            adapter_args = ?adapter_config.args,
+            stop_on_entry,
+            "Launching debug session"
+        );
 
+        tracing::debug!("Spawning DAP adapter process");
         let mut client = DapClient::spawn(&adapter_config.path, &adapter_config.args).await?;
 
         // Take the event receiver
-        let events_rx = client
-            .take_event_receiver()
-            .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
-
-        // Get configured timeouts
+        // Initialize the adapter with timeout
         let init_timeout = std::time::Duration::from_secs(config.timeouts.dap_initialize_secs);
         let request_timeout = std::time::Duration::from_secs(config.timeouts.dap_request_secs);
 
         // Initialize the adapter with timeout
+        tracing::debug!(timeout_secs = init_timeout.as_secs(), "Sending DAP initialize request");
         let capabilities = client.initialize_with_timeout(&adapter_name, init_timeout).await?;
+        tracing::debug!(?capabilities, "DAP adapter initialized");
 
         // Launch the program (DAP: launch must come before initialized event)
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
 
-        client
-            .launch(LaunchArguments {
-                program: program.to_string_lossy().into_owned(),
-                args: args.clone(),
-                cwd,
-                env: None,
-                stop_on_entry,
-                init_commands: None,
-                pre_run_commands: None,
-            })
-            .await?;
+        // Build launch arguments - adapter-specific fields
+        let is_python = adapter_name == "debugpy" 
+            || program.extension().map(|e| e == "py").unwrap_or(false);
+        
+        let launch_args = LaunchArguments {
+            program: program.to_string_lossy().into_owned(),
+            args: args.clone(),
+            cwd,
+            env: None,
+            stop_on_entry,
+            // lldb-dap specific
+            init_commands: None,
+            pre_run_commands: None,
+            // debugpy specific
+            request: if is_python { Some("launch".to_string()) } else { None },
+            console: if is_python { Some("internalConsole".to_string()) } else { None },
+            python: None, // Let debugpy use its own Python
+            just_my_code: if is_python { Some(true) } else { None },
+        };
+
+        tracing::debug!(
+            program = %program.display(),
+            args = ?args,
+            is_python,
+            stop_on_entry,
+            "Sending DAP launch request"
+        );
+        client.launch(launch_args).await?;
+        tracing::debug!("DAP launch request successful");
 
         // Wait for initialized event (comes after launch per DAP spec)
+        tracing::debug!(timeout_secs = request_timeout.as_secs(), "Waiting for DAP initialized event");
         client.wait_initialized_with_timeout(request_timeout).await?;
+        tracing::debug!("Received DAP initialized event");
 
         // Signal configuration done - this tells the adapter to start execution
+        tracing::debug!("Sending DAP configurationDone request");
         client.configuration_done().await?;
+        tracing::debug!("DAP configuration complete, program starting");
+
+        // Take the event receiver (must be done after wait_initialized)
+        let events_rx = client
+            .take_event_receiver()
+            .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
 
         let initial_state = if stop_on_entry {
             SessionState::Stopped
@@ -228,10 +262,6 @@ impl DebugSession {
 
         let mut client = DapClient::spawn(&adapter_config.path, &adapter_config.args).await?;
 
-        let events_rx = client
-            .take_event_receiver()
-            .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
-
         // Get configured timeouts
         let init_timeout = std::time::Duration::from_secs(config.timeouts.dap_initialize_secs);
         let request_timeout = std::time::Duration::from_secs(config.timeouts.dap_request_secs);
@@ -251,6 +281,11 @@ impl DebugSession {
 
         // Signal configuration done
         client.configuration_done().await?;
+
+        // Take the event receiver (must be done after wait_initialized)
+        let events_rx = client
+            .take_event_receiver()
+            .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
 
         Ok(Self {
             client,

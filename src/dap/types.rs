@@ -110,6 +110,9 @@ impl Default for InitializeArguments {
 }
 
 /// Launch request arguments
+///
+/// This structure contains fields for multiple DAP adapters.
+/// Unused fields are skipped during serialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchArguments {
@@ -122,11 +125,26 @@ pub struct LaunchArguments {
     pub env: Option<std::collections::HashMap<String, String>>,
     #[serde(default)]
     pub stop_on_entry: bool,
-    // lldb-dap specific
+    
+    // === lldb-dap specific ===
     #[serde(skip_serializing_if = "Option::is_none")]
     pub init_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_run_commands: Option<Vec<String>>,
+    
+    // === debugpy (Python) specific ===
+    /// Request type: "launch" or "attach" (required by debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// Console type: "integratedTerminal", "internalConsole", or "externalTerminal"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub console: Option<String>,
+    /// Python executable path (debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
+    /// Only debug user code, skip library frames (debugpy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub just_my_code: Option<bool>,
 }
 
 /// Attach request arguments

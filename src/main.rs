@@ -4,8 +4,9 @@
 //! capabilities through a simple command-line interface optimized for LLM agents.
 
 use clap::Parser;
-use debugger::{cli, daemon};
 use debugger::commands::Commands;
+use debugger::common::logging;
+use debugger::{cli, daemon};
 
 #[derive(Parser)]
 #[command(name = "debugger", about = "LLM-friendly debugger CLI")]
@@ -17,16 +18,17 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .with_target(false)
-        .init();
-
     let cli = Cli::parse();
+
+    // Initialize logging differently for daemon vs CLI mode
+    let is_daemon = matches!(cli.command, Commands::Daemon);
+    if is_daemon {
+        if let Some(log_path) = logging::init_daemon() {
+            eprintln!("Daemon logging to: {}", log_path.display());
+        }
+    } else {
+        logging::init_cli();
+    }
 
     let result = match cli.command {
         Commands::Daemon => daemon::run().await,

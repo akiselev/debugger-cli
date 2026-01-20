@@ -543,6 +543,62 @@ pub async fn dispatch(command: Commands) -> Result<()> {
             Ok(())
         }
 
+        Commands::Logs { lines, follow, clear } => {
+            use crate::common::logging;
+
+            let log_path = logging::daemon_log_path();
+
+            if let Some(path) = log_path {
+                if clear {
+                    logging::truncate_daemon_log()?;
+                    println!("Daemon log cleared: {}", path.display());
+                    return Ok(());
+                }
+
+                if !path.exists() {
+                    println!("No daemon log file found at: {}", path.display());
+                    println!("The daemon may not have been started yet.");
+                    return Ok(());
+                }
+
+                if follow {
+                    println!("Following daemon log: {} (Ctrl+C to stop)", path.display());
+                    println!("---");
+                    // Use tail -f for following
+                    let status = std::process::Command::new("tail")
+                        .args(["-f", "-n", &lines.to_string()])
+                        .arg(&path)
+                        .status();
+
+                    match status {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Failed to follow log: {}", e);
+                        }
+                    }
+                } else {
+                    // Read last N lines
+                    let content = std::fs::read_to_string(&path)?;
+                    let all_lines: Vec<&str> = content.lines().collect();
+                    let start = all_lines.len().saturating_sub(lines);
+
+                    println!("Daemon log: {} (last {} lines)", path.display(), lines);
+                    println!("---");
+                    for line in &all_lines[start..] {
+                        println!("{}", line);
+                    }
+
+                    if all_lines.is_empty() {
+                        println!("(log is empty)");
+                    }
+                }
+            } else {
+                println!("Could not determine log file path");
+            }
+
+            Ok(())
+        }
+
         Commands::Setup {
             debugger,
             version,

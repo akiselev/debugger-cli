@@ -9,7 +9,6 @@ mod session;
 
 use crate::common::Result;
 
-
 /// Run in daemon mode
 ///
 /// This is the entry point when the binary is invoked with the hidden `daemon` command.
@@ -19,7 +18,11 @@ use crate::common::Result;
 /// 3. Buffers events when no client is connected
 /// 4. Manages the debug session lifecycle
 pub async fn run() -> Result<()> {
-    tracing::info!("Starting debugger daemon");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        "Starting debugger daemon"
+    );
 
     let mut daemon = server::Daemon::new().await?;
     daemon.run().await

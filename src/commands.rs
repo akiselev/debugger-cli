@@ -160,6 +160,21 @@ pub enum Commands {
     /// Restart program (re-launch with same arguments)
     Restart,
 
+    /// View daemon logs (for debugging)
+    Logs {
+        /// Number of lines to show (default: 50)
+        #[arg(long, short = 'n', default_value = "50")]
+        lines: usize,
+
+        /// Follow log output (like tail -f)
+        #[arg(long, short)]
+        follow: bool,
+
+        /// Clear the log file
+        #[arg(long)]
+        clear: bool,
+    },
+
     /// [Hidden] Run in daemon mode - spawned automatically
     #[command(hide = true)]
     Daemon,

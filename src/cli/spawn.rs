@@ -48,8 +48,8 @@ async fn spawn_daemon() -> Result<()> {
         std::process::Command::new(&exe_path)
             .arg("daemon")
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .process_group(0) // New process group (detach from terminal)
             .spawn()
             .map_err(|e| Error::Internal(format!("Failed to spawn daemon: {}", e)))?;
