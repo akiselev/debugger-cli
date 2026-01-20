@@ -61,6 +61,14 @@ jobs:
       - name: Install debugpy
         run: pip install debugpy
 
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install Delve
+        run: go install github.com/go-delve/delve/cmd/dlv@latest
+
       - name: Install GCC (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get install -y gcc
@@ -70,8 +78,10 @@ jobs:
           echo "=== Checking installed debug adapters ==="
           which lldb-dap || which lldb-vscode || echo "lldb-dap not found in PATH"
           python -c "import debugpy; print(f'debugpy installed at {debugpy.__file__}')"
+          dlv version
           gcc --version
           rustc --version
+          go version
 
       - name: Setup debug adapters via CLI
         run: |
@@ -87,6 +97,10 @@ jobs:
           # Compile Rust test files
           rustc -g tests/e2e/hello_world.rs -o tests/e2e/test_rs || true
           rustc -g tests/fixtures/simple.rs -o tests/fixtures/test_simple_rs || true
+          
+          # Compile Go test files (disable optimizations for debugging)
+          go build -gcflags='all=-N -l' -o tests/e2e/test_go tests/e2e/hello_world.go || true
+          go build -gcflags='all=-N -l' -o tests/fixtures/test_simple_go tests/fixtures/simple.go || true
 
       - name: Run C Hello World E2E Test
         run: |
@@ -101,6 +115,16 @@ jobs:
       - name: Run Python Hello World E2E Test
         run: |
           ./target/release/debugger test tests/scenarios/hello_world_python.yml --verbose
+        continue-on-error: true
+
+      - name: Run Go Hello World E2E Test
+        run: |
+          ./target/release/debugger test tests/scenarios/hello_world_go.yml --verbose
+        continue-on-error: true
+
+      - name: Run Go Complex E2E Test
+        run: |
+          ./target/release/debugger test tests/scenarios/complex_go.yml --verbose
         continue-on-error: true
 
       - name: Run Complex Verification E2E Test
