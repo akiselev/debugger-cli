@@ -1,6 +1,8 @@
-# Developer Onboarding Guide
+# Developer Guide
 
-Welcome to the debugger-cli project! This guide will help you understand the codebase architecture and how to contribute effectively.
+Welcome to debugger-cli! This guide covers everything you need to contribute to the project.
+
+> **Quick Links**: [README](../README.md) | [Changelog](../CHANGELOG.md) | [Architecture](plan/architecture.md)
 
 ## Table of Contents
 
@@ -14,6 +16,23 @@ Welcome to the debugger-cli project! This guide will help you understand the cod
 8. [Configuration System](#configuration-system)
 9. [Testing](#testing)
 10. [Debugging Tips](#debugging-tips)
+
+## Prerequisites
+
+- Rust 1.70+ (`rustup update stable`)
+- A debug adapter for testing (see [README](../README.md#prerequisites))
+- Optional: `lldb-dap` or `codelldb` for end-to-end testing
+
+```bash
+# Build the project
+cargo build
+
+# Run tests
+cargo test
+
+# Run with logging
+RUST_LOG=debug cargo run -- status
+```
 
 ---
 

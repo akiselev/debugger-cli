@@ -3,7 +3,14 @@ name = "debugger"
 version = "0.1.0"
 edition = "2021"
 description = "LLM-friendly debugger CLI using the Debug Adapter Protocol"
-license = "MIT"
+license = "GPL-3.0-only"
+repository = "https://github.com/akiselev/debugger-cli"
+homepage = "https://github.com/akiselev/debugger-cli"
+documentation = "https://docs.rs/debugger-cli"
+readme = "README.md"
+keywords = ["debugger", "dap", "llm", "cli", "debugging"]
+categories = ["development-tools::debugging", "command-line-utilities"]
+authors = ["Alexander Kiselev <alex@akiselev.com>"]
 
 [[bin]]
 name = "debugger"
