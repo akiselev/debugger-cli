@@ -89,13 +89,13 @@ This document tracks the implementation status of debugger-cli.
 ## Quick Test
 
 ```bash
-# Build
+# If installed via cargo install
+debugger --help
+debugger status
+
+# If building from source
 cargo build --release
-
-# Check help
 ./target/release/debugger --help
-
-# Check status
 ./target/release/debugger status
 ```
 

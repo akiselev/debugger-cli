@@ -1,5 +1,5 @@
 [package]
-name = "debugger"
+name = "debugger-cli"
 version = "0.1.0"
 edition = "2021"
 description = "LLM-friendly debugger CLI using the Debug Adapter Protocol"

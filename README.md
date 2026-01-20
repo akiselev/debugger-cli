@@ -2,6 +2,7 @@
 
 **A command-line debugger built for LLM coding agents**
 
+[![Crates.io](https://img.shields.io/crates/v/debugger-cli.svg)](https://crates.io/crates/debugger-cli)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
@@ -31,16 +32,19 @@ LLM agents need to debug programs interactively, but CLI commands are ephemeral.
 ### Installation
 
 ```bash
-# Clone and build
-git clone https://github.com/akiselev/debugger-cli.git
-cd debugger-cli
-cargo build --release
-
-# Add to PATH
-export PATH="$PWD/target/release:$PATH"
+# Install from crates.io
+cargo install debugger-cli
 
 # Install a debug adapter (e.g., lldb for C/C++/Rust)
 debugger setup lldb
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/akiselev/debugger-cli.git
+cd debugger-cli
+cargo install --path .
 ```
 
 ### Prerequisites
