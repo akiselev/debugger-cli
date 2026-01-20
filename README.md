@@ -216,7 +216,7 @@ codelldb = "~/.local/share/debugger-cli/adapters/codelldb/adapter/codelldb"
 | lldb-dap | C, C++, Rust, Swift | ✅ Full support |
 | CodeLLDB | C, C++, Rust | ✅ Full support |
 | debugpy | Python | ✅ Full support |
-| Delve | Go | ✅ Full support |
+| Delve | Go | 🚧 Planned  |
 | cpptools | C, C++ | 🚧 Planned |
 | js-debug | JavaScript, TypeScript | 🚧 Planned |
 
