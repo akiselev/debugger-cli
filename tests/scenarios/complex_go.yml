@@ -61,40 +61,7 @@ steps:
     expect:
       reason: "step"
 
-  # 6. Check local variables x and y
-  - action: inspect_locals
-    asserts:
-      - name: "x"
-        value_contains: "10"
-      - name: "y"
-        value_contains: "20"
-
-  # 7. Continue to add function breakpoint
-  - action: command
-    command: "continue"
-
-  - action: await
-    timeout: 10
-    expect:
-      reason: "breakpoint"
-
-  # 8. Check function arguments in add
-  - action: inspect_locals
-    asserts:
-      - name: "a"
-        value_contains: "10"
-      - name: "b"
-        value_contains: "20"
-
-  # 9. Check the stack trace
-  - action: inspect_stack
-    asserts:
-      - index: 0
-        function: "main.add"
-      - index: 1
-        function: "main.main"
-
-  # 10. Step to compute result
+  # 6. Step past y initialization to make it visible
   - action: command
     command: "next"
 
@@ -103,23 +70,74 @@ steps:
     expect:
       reason: "step"
 
-  # 11. Verify result variable
+  # 7. Check local variables x and y
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        value_contains: "10"
+      - name: "y"
+        value_contains: "20"
+
+  # 8. Continue to add function breakpoint
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  # 9. Check function arguments in add
+  - action: inspect_locals
+    asserts:
+      - name: "a"
+        value_contains: "10"
+      - name: "b"
+        value_contains: "20"
+
+  # 10. Check the stack trace
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "main.add"
+      - index: 1
+        function: "main.main"
+
+  # 11. Step to compute result
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 12. Step past result assignment to make it visible
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 13. Verify result variable
   - action: inspect_locals
     asserts:
       - name: "result"
         value_contains: "30"
 
-  # 12. Evaluate an expression
+  # 14. Evaluate an expression
   - action: evaluate
     expression: "a * b"
     expect:
       result_contains: "200"
 
-  # 13. Continue to exit
+  # 15. Continue to exit (Delve sends "terminated" event)
   - action: command
     command: "continue"
 
   - action: await
     timeout: 15
     expect:
-      reason: "exited"
+      reason: "terminated"

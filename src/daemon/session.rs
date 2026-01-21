@@ -197,6 +197,8 @@ impl DebugSession {
             just_my_code: if is_python { Some(true) } else { None },
             // Delve (Go) specific - use "exec" for precompiled binaries
             mode: if is_go { Some("exec".to_string()) } else { None },
+            // Delve uses stopAtEntry instead of stopOnEntry
+            stop_at_entry: if is_go && stop_on_entry { Some(true) } else { None },
         };
 
         tracing::debug!(
@@ -391,6 +393,14 @@ impl DebugSession {
         }
 
         Ok(events)
+    }
+
+    /// Drain and process any pending events without collecting them
+    /// This ensures we don't lose state updates from events while clearing the queue
+    fn drain_pending_events(&mut self) {
+        while let Ok(event) = self.events_rx.try_recv() {
+            self.handle_event(&event);
+        }
     }
 
     /// Handle a single event
@@ -823,15 +833,15 @@ impl DebugSession {
     pub async fn continue_execution(&mut self) -> Result<()> {
         self.ensure_stopped()?;
 
+        // Process any pending events before sending continue request
+        // This ensures we don't lose state updates while clearing the queue
+        self.drain_pending_events();
+
         let thread_id = self.get_thread_id().await?;
         self.client.continue_execution(thread_id).await?;
         self.state = SessionState::Running;
         self.stopped_thread = None;
         self.stopped_reason = None;
-        
-        // Drain any pending events that arrived before continue was issued
-        // This prevents stale stop events from being processed
-        while self.events_rx.try_recv().is_ok() {}
 
         Ok(())
     }
@@ -840,12 +850,12 @@ impl DebugSession {
     pub async fn next(&mut self) -> Result<()> {
         self.ensure_stopped()?;
 
+        // Process any pending events before sending step request
+        self.drain_pending_events();
+
         let thread_id = self.get_thread_id().await?;
         self.client.next(thread_id).await?;
         self.state = SessionState::Running;
-        
-        // Drain any pending events that arrived before step was issued
-        while self.events_rx.try_recv().is_ok() {}
 
         Ok(())
     }
@@ -854,12 +864,12 @@ impl DebugSession {
     pub async fn step_in(&mut self) -> Result<()> {
         self.ensure_stopped()?;
 
+        // Process any pending events before sending step request
+        self.drain_pending_events();
+
         let thread_id = self.get_thread_id().await?;
         self.client.step_in(thread_id).await?;
         self.state = SessionState::Running;
-        
-        // Drain any pending events that arrived before step was issued
-        while self.events_rx.try_recv().is_ok() {}
 
         Ok(())
     }
@@ -868,12 +878,12 @@ impl DebugSession {
     pub async fn step_out(&mut self) -> Result<()> {
         self.ensure_stopped()?;
 
+        // Process any pending events before sending step request
+        self.drain_pending_events();
+
         let thread_id = self.get_thread_id().await?;
         self.client.step_out(thread_id).await?;
         self.state = SessionState::Running;
-        
-        // Drain any pending events that arrived before step was issued
-        while self.events_rx.try_recv().is_ok() {}
 
         Ok(())
     }

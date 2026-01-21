@@ -318,7 +318,8 @@ pub struct VariableInfo {
 pub struct StopResult {
     pub reason: String,
     pub description: Option<String>,
-    pub thread_id: i64,
+    #[serde(default)]
+    pub thread_id: Option<i64>,
     #[serde(default)]
     pub all_threads_stopped: bool,
     #[serde(default)]
