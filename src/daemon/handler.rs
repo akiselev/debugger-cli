@@ -392,16 +392,51 @@ async fn handle_command_inner(
         Command::Await { timeout_secs } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
 
-            // First process any pending events
+            // Process any pending events
             sess.process_events().await?;
 
-            // If already stopped, return immediately
+            // If we're already stopped, fetch stack trace and return stop info
             if sess.state() == SessionState::Stopped {
-                return Ok(json!({
-                    "reason": sess.stopped_reason().unwrap_or("unknown"),
-                    "thread_id": sess.stopped_thread().unwrap_or(0),
-                    "already_stopped": true
-                }));
+                // Fetch stack trace to get source location info
+                let stack_result = sess.stack_trace(1).await;
+                tracing::debug!("already_stopped: stack_trace result: {:?}", stack_result);
+                
+                let (source, line, column) = match stack_result {
+                    Ok(frames) if !frames.is_empty() => {
+                        let frame = &frames[0];
+                        tracing::debug!("already_stopped: frame source: {:?}", frame.source);
+                        let source_path = frame.source.as_ref().and_then(|s| s.path.clone());
+                        // Extract just the filename from the path
+                        let source_name = source_path.as_ref().map(|p| {
+                            std::path::Path::new(p)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(p)
+                                .to_string()
+                        });
+                        (source_name, Some(frame.line as u32), Some(frame.column as u32))
+                    }
+                    Ok(frames) => {
+                        tracing::debug!("already_stopped: no frames returned (empty)");
+                        (None, None, None)
+                    }
+                    Err(e) => {
+                        tracing::debug!("already_stopped: stack_trace error: {:?}", e);
+                        (None, None, None)
+                    }
+                };
+                
+                let result = StopResult {
+                    reason: sess.stopped_reason().unwrap_or("unknown").to_string(),
+                    description: None,
+                    thread_id: sess.stopped_thread().unwrap_or(0),
+                    all_threads_stopped: true,
+                    hit_breakpoint_ids: vec![],
+                    source,
+                    line,
+                    column,
+                };
+                return Ok(serde_json::to_value(result)?);
             }
 
             if sess.state() == SessionState::Exited {
@@ -416,15 +451,33 @@ async fn handle_command_inner(
 
             match event {
                 Event::Stopped(body) => {
+                    // Fetch stack trace to get source location info
+                    let (source, line, column) = match sess.stack_trace(1).await {
+                        Ok(frames) if !frames.is_empty() => {
+                            let frame = &frames[0];
+                            let source_path = frame.source.as_ref().and_then(|s| s.path.clone());
+                            // Extract just the filename from the path
+                            let source_name = source_path.as_ref().map(|p| {
+                                std::path::Path::new(p)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(p)
+                                    .to_string()
+                            });
+                            (source_name, Some(frame.line as u32), Some(frame.column as u32))
+                        }
+                        _ => (None, None, None),
+                    };
+                    
                     let result = StopResult {
                         reason: body.reason,
                         description: body.description,
                         thread_id: body.thread_id.unwrap_or(0),
                         all_threads_stopped: body.all_threads_stopped,
                         hit_breakpoint_ids: body.hit_breakpoint_ids,
-                        source: None, // Would need stack trace to get this
-                        line: None,
-                        column: None,
+                        source,
+                        line,
+                        column,
                     };
                     Ok(serde_json::to_value(result)?)
                 }

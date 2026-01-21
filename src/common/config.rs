@@ -31,6 +31,17 @@ pub struct Config {
     pub output: OutputConfig,
 }
 
+/// Transport mode for debug adapter communication
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportMode {
+    /// Standard input/output (default for most adapters)
+    #[default]
+    Stdio,
+    /// TCP socket connection (used by Delve)
+    Tcp,
+}
+
 /// Configuration for a debug adapter
 #[derive(Debug, Deserialize, Clone)]
 pub struct AdapterConfig {
@@ -40,6 +51,10 @@ pub struct AdapterConfig {
     /// Additional arguments to pass to the adapter
     #[serde(default)]
     pub args: Vec<String>,
+
+    /// Transport mode for DAP communication
+    #[serde(default)]
+    pub transport: TransportMode,
 }
 
 /// Default settings
@@ -179,6 +194,7 @@ impl Config {
         which::which(name).ok().map(|path| AdapterConfig {
             path,
             args: Vec::new(),
+            transport: TransportMode::default(),
         })
     }
 }

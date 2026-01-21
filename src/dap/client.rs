@@ -6,14 +6,19 @@
 //! ## Architecture
 //!
 //! The DapClient uses a background reader task to continuously read from the
-//! adapter's stdout. This ensures that events (stopped, output, etc.) are
-//! captured immediately rather than only during request/response cycles.
+//! adapter's stdout (or TCP socket). This ensures that events (stopped, output,
+//! etc.) are captured immediately rather than only during request/response cycles.
 //!
 //! ```text
-//! [DAP Adapter] --stdout--> [Reader Task] --events--> [event_tx channel]
-//!                                        --responses-> [response channels]
-//! [DapClient]   --stdin-->  [DAP Adapter]
+//! [DAP Adapter] --stdout/tcp--> [Reader Task] --events--> [event_tx channel]
+//!                                            --responses-> [response channels]
+//! [DapClient]   --stdin/tcp-->  [DAP Adapter]
 //! ```
+//!
+//! ## Transport Modes
+//!
+//! - **Stdio**: Standard input/output (default, used by lldb-dap, debugpy)
+//! - **TCP**: TCP socket connection (used by Delve)
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,8 +27,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use serde_json::Value;
-use tokio::io::{BufReader, BufWriter};
+use tokio::io::{AsyncWrite, BufReader, BufWriter};
+use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -35,12 +44,45 @@ use super::types::*;
 /// Pending response waiters, keyed by request sequence number
 type PendingResponses = Arc<Mutex<HashMap<i64, oneshot::Sender<std::result::Result<ResponseMessage, Error>>>>>;
 
+/// Abstraction over different writer types (stdin or TCP)
+enum DapWriter {
+    Stdio(BufWriter<ChildStdin>),
+    Tcp(BufWriter<tokio::io::WriteHalf<TcpStream>>),
+}
+
+impl AsyncWrite for DapWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            DapWriter::Stdio(w) => Pin::new(w).poll_write(cx, buf),
+            DapWriter::Tcp(w) => Pin::new(w).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            DapWriter::Stdio(w) => Pin::new(w).poll_flush(cx),
+            DapWriter::Tcp(w) => Pin::new(w).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            DapWriter::Stdio(w) => Pin::new(w).poll_shutdown(cx),
+            DapWriter::Tcp(w) => Pin::new(w).poll_shutdown(cx),
+        }
+    }
+}
+
 /// DAP client for communicating with a debug adapter
 pub struct DapClient {
     /// Adapter subprocess
     adapter: Child,
-    /// Buffered writer for adapter stdin
-    writer: BufWriter<ChildStdin>,
+    /// Buffered writer for adapter communication
+    writer: DapWriter,
     /// Sequence number for requests
     seq: AtomicI64,
     /// Adapter capabilities (populated after initialize)
@@ -87,7 +129,7 @@ impl DapClient {
         let pending: PendingResponses = Arc::new(Mutex::new(HashMap::new()));
 
         // Spawn background reader task
-        let reader_task = Self::spawn_reader_task(
+        let reader_task = Self::spawn_stdio_reader_task(
             stdout,
             event_tx.clone(),
             pending.clone(),
@@ -96,7 +138,7 @@ impl DapClient {
 
         Ok(Self {
             adapter,
-            writer: BufWriter::new(stdin),
+            writer: DapWriter::Stdio(BufWriter::new(stdin)),
             seq: AtomicI64::new(1),
             capabilities: Capabilities::default(),
             pending,
@@ -107,8 +149,112 @@ impl DapClient {
         })
     }
 
-    /// Spawn the background reader task that continuously reads from adapter stdout
-    fn spawn_reader_task(
+    /// Spawn a new DAP adapter that uses TCP for communication (e.g., Delve)
+    ///
+    /// This spawns the adapter with a --listen flag, waits for it to output
+    /// the port it's listening on, then connects via TCP.
+    pub async fn spawn_tcp(adapter_path: &Path, args: &[String]) -> Result<Self> {
+        use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
+
+        // Build command with --listen=127.0.0.1:0 to get a random available port
+        let mut cmd = Command::new(adapter_path);
+        cmd.args(args)
+            .arg("--listen=127.0.0.1:0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut adapter = cmd.spawn().map_err(|e| {
+            Error::AdapterStartFailed(format!(
+                "Failed to start {}: {}",
+                adapter_path.display(),
+                e
+            ))
+        })?;
+
+        // Read stdout to find the listening address
+        // Delve outputs: "DAP server listening at: 127.0.0.1:PORT"
+        let stdout = adapter.stdout.take().ok_or_else(|| {
+            Error::AdapterStartFailed("Failed to get adapter stdout".to_string())
+        })?;
+
+        let mut stdout_reader = TokioBufReader::new(stdout);
+        let mut line = String::new();
+
+        // Wait for the "listening at" message with timeout
+        let addr = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                line.clear();
+                let bytes_read = stdout_reader.read_line(&mut line).await.map_err(|e| {
+                    Error::AdapterStartFailed(format!("Failed to read adapter output: {}", e))
+                })?;
+
+                if bytes_read == 0 {
+                    return Err(Error::AdapterStartFailed(
+                        "Adapter exited before outputting listen address".to_string(),
+                    ));
+                }
+
+                tracing::debug!("Delve output: {}", line.trim());
+
+                // Look for the listening address in the output
+                // Format: "DAP server listening at: 127.0.0.1:PORT" or "[::]:PORT"
+                if let Some(addr_start) = line.find("listening at:") {
+                    let addr_part = &line[addr_start + "listening at:".len()..];
+                    let addr = addr_part.trim().to_string();
+                    // Handle IPv6 format [::]:PORT
+                    let addr = if addr.starts_with("[::]:") {
+                        addr.replace("[::]:", "127.0.0.1:")
+                    } else {
+                        addr
+                    };
+                    return Ok(addr);
+                }
+            }
+        })
+        .await
+        .map_err(|_| {
+            Error::AdapterStartFailed(
+                "Timeout waiting for Delve to start listening".to_string(),
+            )
+        })??;
+
+        tracing::info!("Connecting to Delve DAP server at {}", addr);
+
+        // Connect to the TCP port
+        let stream = TcpStream::connect(&addr).await.map_err(|e| {
+            Error::AdapterStartFailed(format!("Failed to connect to Delve at {}: {}", addr, e))
+        })?;
+
+        let (read_half, write_half) = tokio::io::split(stream);
+
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let pending: PendingResponses = Arc::new(Mutex::new(HashMap::new()));
+
+        // Spawn background reader task for TCP
+        let reader_task = Self::spawn_tcp_reader_task(
+            read_half,
+            event_tx.clone(),
+            pending.clone(),
+            shutdown_rx,
+        );
+
+        Ok(Self {
+            adapter,
+            writer: DapWriter::Tcp(BufWriter::new(write_half)),
+            seq: AtomicI64::new(1),
+            capabilities: Capabilities::default(),
+            pending,
+            event_tx,
+            event_rx: Some(event_rx),
+            reader_task: Some(reader_task),
+            shutdown_tx: Some(shutdown_tx),
+        })
+    }
+
+    /// Spawn the background reader task for stdio-based adapters
+    fn spawn_stdio_reader_task(
         stdout: ChildStdout,
         event_tx: mpsc::UnboundedSender<Event>,
         pending: PendingResponses,
@@ -167,6 +313,68 @@ impl DapClient {
             }
 
             tracing::debug!("Reader task exiting");
+        })
+    }
+
+    /// Spawn the background reader task for TCP-based adapters
+    fn spawn_tcp_reader_task(
+        read_half: tokio::io::ReadHalf<TcpStream>,
+        event_tx: mpsc::UnboundedSender<Event>,
+        pending: PendingResponses,
+        mut shutdown_rx: mpsc::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(read_half);
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    // Check for shutdown signal
+                    _ = shutdown_rx.recv() => {
+                        tracing::debug!("TCP reader task received shutdown signal");
+                        break;
+                    }
+
+                    // Read next message
+                    result = codec::read_message(&mut reader) => {
+                        match result {
+                            Ok(json) => {
+                                tracing::trace!("DAP <<< {}", json);
+
+                                if let Err(e) = Self::process_message(&json, &event_tx, &pending).await {
+                                    tracing::error!("Error processing DAP message: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                let err_str = e.to_string().to_lowercase();
+                                let is_eof = err_str.contains("unexpected eof")
+                                    || err_str.contains("unexpectedeof")
+                                    || err_str.contains("end of file")
+                                    || err_str.contains("connection reset");
+
+                                if is_eof {
+                                    tracing::info!("DAP adapter closed TCP connection");
+                                } else {
+                                    tracing::error!("Error reading from DAP adapter (TCP): {}", e);
+                                }
+
+                                // Signal error to any pending requests
+                                let mut pending_guard = pending.lock().await;
+                                for (_, tx) in pending_guard.drain() {
+                                    let _ = tx.send(Err(Error::AdapterCrashed));
+                                }
+
+                                // Send terminated event to notify the session
+                                let _ = event_tx.send(Event::Terminated(None));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            tracing::debug!("TCP reader task exiting");
         })
     }
 
