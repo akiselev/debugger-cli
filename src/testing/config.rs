@@ -92,6 +92,9 @@ pub struct CommandExpectation {
     pub success: Option<bool>,
     /// Substring that should be in the output
     pub output_contains: Option<String>,
+    /// Allow failures without failing the test
+    #[serde(default)]
+    pub allow_failure: bool,
 }
 
 /// Expectations for a stop event
