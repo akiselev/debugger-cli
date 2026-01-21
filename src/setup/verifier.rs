@@ -2,10 +2,10 @@
 //!
 //! Verifies that installed debuggers work correctly by sending DAP messages.
 
-use crate::common::{Error, Result};
+use crate::common::{parse_listen_address, Error, Result};
 use std::path::Path;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::{timeout, Duration};
@@ -104,15 +104,7 @@ pub async fn verify_dap_adapter_tcp(
             }
 
             // Look for the listening address in the output
-            if let Some(addr_start) = line.find("listening at:") {
-                let addr_part = &line[addr_start + "listening at:".len()..];
-                let addr = addr_part.trim().to_string();
-                // Handle IPv6 format [::]:PORT
-                let addr = if addr.starts_with("[::]:") {
-                    addr.replace("[::]:", "127.0.0.1:")
-                } else {
-                    addr
-                };
+            if let Some(addr) = parse_listen_address(&line) {
                 return Ok(addr);
             }
         }
@@ -190,17 +182,9 @@ async fn spawn_adapter(path: &Path, args: &[String]) -> Result<Child> {
     Ok(child)
 }
 
-/// Send DAP initialize request and parse response
-async fn send_initialize(child: &mut Child) -> Result<DapCapabilities> {
-    let stdin = child.stdin.as_mut().ok_or_else(|| {
-        Error::Internal("Failed to get stdin".to_string())
-    })?;
-    let stdout = child.stdout.as_mut().ok_or_else(|| {
-        Error::Internal("Failed to get stdout".to_string())
-    })?;
-
-    // Create initialize request
-    let request = serde_json::json!({
+/// Build the DAP initialize request JSON
+fn build_initialize_request() -> serde_json::Value {
+    serde_json::json!({
         "seq": 1,
         "type": "request",
         "command": "initialize",
@@ -213,17 +197,54 @@ async fn send_initialize(child: &mut Child) -> Result<DapCapabilities> {
             "columnsStartAt1": true,
             "supportsRunInTerminalRequest": false
         }
-    });
+    })
+}
 
+/// Parse a DAP response and extract capabilities
+fn parse_initialize_response(response: &serde_json::Value) -> Result<DapCapabilities> {
+    // Check for success
+    if response.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        let message = response
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error");
+        return Err(Error::Internal(format!("Initialize failed: {}", message)));
+    }
+
+    // Extract capabilities
+    let body = response.get("body").cloned().unwrap_or_default();
+    Ok(DapCapabilities {
+        supports_configuration_done_request: body
+            .get("supportsConfigurationDoneRequest")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        supports_function_breakpoints: body
+            .get("supportsFunctionBreakpoints")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        supports_conditional_breakpoints: body
+            .get("supportsConditionalBreakpoints")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        supports_evaluate_for_hovers: body
+            .get("supportsEvaluateForHovers")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
+}
+
+/// Send a DAP message and read the response from a reader/writer pair
+async fn send_dap_message<W, R>(writer: &mut W, reader: &mut BufReader<R>, request: &serde_json::Value) -> Result<serde_json::Value>
+where
+    W: AsyncWriteExt + Unpin,
+    R: tokio::io::AsyncRead + Unpin,
+{
     // Send with DAP header
-    let body = serde_json::to_string(&request)?;
+    let body = serde_json::to_string(request)?;
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    stdin.write_all(header.as_bytes()).await?;
-    stdin.write_all(body.as_bytes()).await?;
-    stdin.flush().await?;
-
-    // Read response
-    let mut reader = BufReader::new(stdout);
+    writer.write_all(header.as_bytes()).await?;
+    writer.write_all(body.as_bytes()).await?;
+    writer.flush().await?;
 
     // Parse DAP headers - some adapters emit multiple headers (Content-Length, Content-Type)
     let mut content_length: Option<usize> = None;
@@ -249,135 +270,36 @@ async fn send_initialize(child: &mut Child) -> Result<DapCapabilities> {
 
     // Read body
     let mut body = vec![0u8; content_length];
-    tokio::io::AsyncReadExt::read_exact(&mut reader, &mut body).await?;
-
-    // Parse response
-    let response: serde_json::Value = serde_json::from_slice(&body)?;
-
-    // Check for success
-    if response.get("success").and_then(|v| v.as_bool()) != Some(true) {
-        let message = response
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error");
-        return Err(Error::Internal(format!("Initialize failed: {}", message)));
-    }
-
-    // Extract capabilities
-    let body = response.get("body").cloned().unwrap_or_default();
-    let caps = DapCapabilities {
-        supports_configuration_done_request: body
-            .get("supportsConfigurationDoneRequest")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        supports_function_breakpoints: body
-            .get("supportsFunctionBreakpoints")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        supports_conditional_breakpoints: body
-            .get("supportsConditionalBreakpoints")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        supports_evaluate_for_hovers: body
-            .get("supportsEvaluateForHovers")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    };
-
-    Ok(caps)
-}
-
-/// Send DAP initialize request via TCP and parse response
-async fn send_initialize_tcp(stream: TcpStream) -> Result<DapCapabilities> {
-    use tokio::io::AsyncReadExt;
-
-    let (read_half, mut write_half) = tokio::io::split(stream);
-
-    // Create initialize request
-    let request = serde_json::json!({
-        "seq": 1,
-        "type": "request",
-        "command": "initialize",
-        "arguments": {
-            "clientID": "debugger-cli",
-            "clientName": "debugger-cli",
-            "adapterID": "test",
-            "pathFormat": "path",
-            "linesStartAt1": true,
-            "columnsStartAt1": true,
-            "supportsRunInTerminalRequest": false
-        }
-    });
-
-    // Send with DAP header
-    let body = serde_json::to_string(&request)?;
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    write_half.write_all(header.as_bytes()).await?;
-    write_half.write_all(body.as_bytes()).await?;
-    write_half.flush().await?;
-
-    // Read response
-    let mut reader = BufReader::new(read_half);
-
-    // Parse DAP headers
-    let mut content_length: Option<usize> = None;
-    loop {
-        let mut header_line = String::new();
-        reader.read_line(&mut header_line).await?;
-        let trimmed = header_line.trim();
-
-        // Empty line marks end of headers
-        if trimmed.is_empty() {
-            break;
-        }
-
-        // Parse Content-Length header
-        if let Some(len_str) = trimmed.strip_prefix("Content-Length:") {
-            content_length = len_str.trim().parse().ok();
-        }
-    }
-
-    let content_length = content_length
-        .ok_or_else(|| Error::Internal("Missing Content-Length in DAP response".to_string()))?;
-
-    // Read body
-    let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body).await?;
 
     // Parse response
     let response: serde_json::Value = serde_json::from_slice(&body)?;
+    Ok(response)
+}
 
-    // Check for success
-    if response.get("success").and_then(|v| v.as_bool()) != Some(true) {
-        let message = response
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error");
-        return Err(Error::Internal(format!("Initialize failed: {}", message)));
-    }
+/// Send DAP initialize request and parse response (stdio)
+async fn send_initialize(child: &mut Child) -> Result<DapCapabilities> {
+    let stdin = child.stdin.as_mut().ok_or_else(|| {
+        Error::Internal("Failed to get stdin".to_string())
+    })?;
+    let stdout = child.stdout.as_mut().ok_or_else(|| {
+        Error::Internal("Failed to get stdout".to_string())
+    })?;
 
-    // Extract capabilities
-    let body = response.get("body").cloned().unwrap_or_default();
-    let caps = DapCapabilities {
-        supports_configuration_done_request: body
-            .get("supportsConfigurationDoneRequest")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        supports_function_breakpoints: body
-            .get("supportsFunctionBreakpoints")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        supports_conditional_breakpoints: body
-            .get("supportsConditionalBreakpoints")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        supports_evaluate_for_hovers: body
-            .get("supportsEvaluateForHovers")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    };
+    let request = build_initialize_request();
+    let mut reader = BufReader::new(stdout);
+    let response = send_dap_message(stdin, &mut reader, &request).await?;
+    parse_initialize_response(&response)
+}
 
-    Ok(caps)
+/// Send DAP initialize request via TCP and parse response
+async fn send_initialize_tcp(stream: TcpStream) -> Result<DapCapabilities> {
+    let (read_half, mut write_half) = tokio::io::split(stream);
+    
+    let request = build_initialize_request();
+    let mut reader = BufReader::new(read_half);
+    let response = send_dap_message(&mut write_half, &mut reader, &request).await?;
+    parse_initialize_response(&response)
 }
 
 /// Simple executable check (just verifies the binary runs)

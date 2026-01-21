@@ -154,6 +154,7 @@ impl DapClient {
     /// This spawns the adapter with a --listen flag, waits for it to output
     /// the port it's listening on, then connects via TCP.
     pub async fn spawn_tcp(adapter_path: &Path, args: &[String]) -> Result<Self> {
+        use crate::common::parse_listen_address;
         use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
 
         // Build command with --listen=127.0.0.1:0 to get a random available port
@@ -175,6 +176,7 @@ impl DapClient {
         // Read stdout to find the listening address
         // Delve outputs: "DAP server listening at: 127.0.0.1:PORT"
         let stdout = adapter.stdout.take().ok_or_else(|| {
+            let _ = adapter.start_kill();
             Error::AdapterStartFailed("Failed to get adapter stdout".to_string())
         })?;
 
@@ -182,7 +184,7 @@ impl DapClient {
         let mut line = String::new();
 
         // Wait for the "listening at" message with timeout
-        let addr = tokio::time::timeout(Duration::from_secs(10), async {
+        let addr_result = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 line.clear();
                 let bytes_read = stdout_reader.read_line(&mut line).await.map_err(|e| {
@@ -198,33 +200,41 @@ impl DapClient {
                 tracing::debug!("Delve output: {}", line.trim());
 
                 // Look for the listening address in the output
-                // Format: "DAP server listening at: 127.0.0.1:PORT" or "[::]:PORT"
-                if let Some(addr_start) = line.find("listening at:") {
-                    let addr_part = &line[addr_start + "listening at:".len()..];
-                    let addr = addr_part.trim().to_string();
-                    // Handle IPv6 format [::]:PORT
-                    let addr = if addr.starts_with("[::]:") {
-                        addr.replace("[::]:", "127.0.0.1:")
-                    } else {
-                        addr
-                    };
+                if let Some(addr) = parse_listen_address(&line) {
                     return Ok(addr);
                 }
             }
         })
-        .await
-        .map_err(|_| {
-            Error::AdapterStartFailed(
-                "Timeout waiting for Delve to start listening".to_string(),
-            )
-        })??;
+        .await;
+
+        // Handle timeout or error - cleanup adapter before returning
+        let addr = match addr_result {
+            Ok(Ok(addr)) => addr,
+            Ok(Err(e)) => {
+                let _ = adapter.start_kill();
+                return Err(e);
+            }
+            Err(_) => {
+                let _ = adapter.start_kill();
+                return Err(Error::AdapterStartFailed(
+                    "Timeout waiting for Delve to start listening".to_string(),
+                ));
+            }
+        };
 
         tracing::info!("Connecting to Delve DAP server at {}", addr);
 
-        // Connect to the TCP port
-        let stream = TcpStream::connect(&addr).await.map_err(|e| {
-            Error::AdapterStartFailed(format!("Failed to connect to Delve at {}: {}", addr, e))
-        })?;
+        // Connect to the TCP port - cleanup adapter on failure
+        let stream = match TcpStream::connect(&addr).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = adapter.start_kill();
+                return Err(Error::AdapterStartFailed(format!(
+                    "Failed to connect to Delve at {}: {}",
+                    addr, e
+                )));
+            }
+        };
 
         let (read_half, write_half) = tokio::io::split(stream);
 

@@ -5,13 +5,32 @@
 use serde_json::json;
 
 use crate::common::{config::Config, error::IpcError, Error, Result};
-use crate::dap::Event;
+use crate::dap::{Event, StackFrame};
 use crate::ipc::protocol::{
     BreakpointLocation, Command, ContextResult, EvaluateContext, EvaluateResult, Response,
     SourceLine, StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo,
 };
 
 use super::session::{DebugSession, SessionState};
+
+/// Extract source location info (filename, line, column) from the top stack frame
+fn extract_source_location(frames: &[StackFrame]) -> (Option<String>, Option<u32>, Option<u32>) {
+    if frames.is_empty() {
+        return (None, None, None);
+    }
+    
+    let frame = &frames[0];
+    let source_path = frame.source.as_ref().and_then(|s| s.path.clone());
+    // Extract just the filename from the path
+    let source_name = source_path.as_ref().map(|p| {
+        std::path::Path::new(p)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(p)
+            .to_string()
+    });
+    (source_name, Some(frame.line as u32), Some(frame.column as u32))
+}
 
 /// Handle an IPC command
 pub async fn handle_command(
@@ -399,20 +418,8 @@ async fn handle_command_inner(
             if sess.state() == SessionState::Stopped {
                 // Fetch stack trace to get source location info
                 let (source, line, column) = match sess.stack_trace(1).await {
-                    Ok(frames) if !frames.is_empty() => {
-                        let frame = &frames[0];
-                        let source_path = frame.source.as_ref().and_then(|s| s.path.clone());
-                        // Extract just the filename from the path
-                        let source_name = source_path.as_ref().map(|p| {
-                            std::path::Path::new(p)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(p)
-                                .to_string()
-                        });
-                        (source_name, Some(frame.line as u32), Some(frame.column as u32))
-                    }
-                    _ => (None, None, None),
+                    Ok(ref frames) => extract_source_location(frames),
+                    Err(_) => (None, None, None),
                 };
                 
                 let result = StopResult {
@@ -442,20 +449,8 @@ async fn handle_command_inner(
                 Event::Stopped(body) => {
                     // Fetch stack trace to get source location info
                     let (source, line, column) = match sess.stack_trace(1).await {
-                        Ok(frames) if !frames.is_empty() => {
-                            let frame = &frames[0];
-                            let source_path = frame.source.as_ref().and_then(|s| s.path.clone());
-                            // Extract just the filename from the path
-                            let source_name = source_path.as_ref().map(|p| {
-                                std::path::Path::new(p)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(p)
-                                    .to_string()
-                            });
-                            (source_name, Some(frame.line as u32), Some(frame.column as u32))
-                        }
-                        _ => (None, None, None),
+                        Ok(ref frames) => extract_source_location(frames),
+                        Err(_) => (None, None, None),
                     };
                     
                     let result = StopResult {
