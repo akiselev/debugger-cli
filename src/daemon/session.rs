@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::sync::mpsc;
 
-use crate::common::{config::Config, Error, Result};
+use crate::common::{config::{Config, TransportMode}, Error, Result};
 use crate::dap::{
     self, Breakpoint, Capabilities, DapClient, Event, FunctionBreakpoint, LaunchArguments,
     AttachArguments, Scope, SourceBreakpoint, StackFrame, Thread, Variable,
@@ -144,12 +144,20 @@ impl DebugSession {
             adapter = %adapter_name,
             adapter_path = %adapter_config.path.display(),
             adapter_args = ?adapter_config.args,
+            transport = ?adapter_config.transport,
             stop_on_entry,
             "Launching debug session"
         );
 
         tracing::debug!("Spawning DAP adapter process");
-        let mut client = DapClient::spawn(&adapter_config.path, &adapter_config.args).await?;
+        let mut client = match adapter_config.transport {
+            TransportMode::Stdio => {
+                DapClient::spawn(&adapter_config.path, &adapter_config.args).await?
+            }
+            TransportMode::Tcp => {
+                DapClient::spawn_tcp(&adapter_config.path, &adapter_config.args).await?
+            }
+        };
 
         // Take the event receiver
         // Initialize the adapter with timeout
@@ -169,6 +177,9 @@ impl DebugSession {
         // Build launch arguments - adapter-specific fields
         let is_python = adapter_name == "debugpy" 
             || program.extension().map(|e| e == "py").unwrap_or(false);
+        let is_go = adapter_name == "go"
+            || adapter_name == "delve"
+            || adapter_name == "dlv";
         
         let launch_args = LaunchArguments {
             program: program.to_string_lossy().into_owned(),
@@ -184,6 +195,10 @@ impl DebugSession {
             console: if is_python { Some("internalConsole".to_string()) } else { None },
             python: None, // Let debugpy use its own Python
             just_my_code: if is_python { Some(true) } else { None },
+            // Delve (Go) specific - use "exec" for precompiled binaries
+            mode: if is_go { Some("exec".to_string()) } else { None },
+            // Delve uses stopAtEntry instead of stopOnEntry
+            stop_at_entry: if is_go && stop_on_entry { Some(true) } else { None },
         };
 
         tracing::debug!(
@@ -268,9 +283,21 @@ impl DebugSession {
             Error::adapter_not_found(&adapter_name, &[&adapter_name])
         })?;
 
-        tracing::info!("Attaching to PID {} with adapter {}", pid, adapter_name);
+        tracing::info!(
+            pid,
+            adapter = %adapter_name,
+            transport = ?adapter_config.transport,
+            "Attaching to process"
+        );
 
-        let mut client = DapClient::spawn(&adapter_config.path, &adapter_config.args).await?;
+        let mut client = match adapter_config.transport {
+            TransportMode::Stdio => {
+                DapClient::spawn(&adapter_config.path, &adapter_config.args).await?
+            }
+            TransportMode::Tcp => {
+                DapClient::spawn_tcp(&adapter_config.path, &adapter_config.args).await?
+            }
+        };
 
         // Get configured timeouts
         let init_timeout = std::time::Duration::from_secs(config.timeouts.dap_initialize_secs);
@@ -366,6 +393,14 @@ impl DebugSession {
         }
 
         Ok(events)
+    }
+
+    /// Drain and process any pending events without collecting them
+    /// This ensures we don't lose state updates from events while clearing the queue
+    fn drain_pending_events(&mut self) {
+        while let Ok(event) = self.events_rx.try_recv() {
+            self.handle_event(&event);
+        }
     }
 
     /// Handle a single event
@@ -798,6 +833,10 @@ impl DebugSession {
     pub async fn continue_execution(&mut self) -> Result<()> {
         self.ensure_stopped()?;
 
+        // Process any pending events before sending continue request
+        // This ensures we don't lose state updates while clearing the queue
+        self.drain_pending_events();
+
         let thread_id = self.get_thread_id().await?;
         self.client.continue_execution(thread_id).await?;
         self.state = SessionState::Running;
@@ -811,6 +850,9 @@ impl DebugSession {
     pub async fn next(&mut self) -> Result<()> {
         self.ensure_stopped()?;
 
+        // Process any pending events before sending step request
+        self.drain_pending_events();
+
         let thread_id = self.get_thread_id().await?;
         self.client.next(thread_id).await?;
         self.state = SessionState::Running;
@@ -822,6 +864,9 @@ impl DebugSession {
     pub async fn step_in(&mut self) -> Result<()> {
         self.ensure_stopped()?;
 
+        // Process any pending events before sending step request
+        self.drain_pending_events();
+
         let thread_id = self.get_thread_id().await?;
         self.client.step_in(thread_id).await?;
         self.state = SessionState::Running;
@@ -832,6 +877,9 @@ impl DebugSession {
     /// Step out
     pub async fn step_out(&mut self) -> Result<()> {
         self.ensure_stopped()?;
+
+        // Process any pending events before sending step request
+        self.drain_pending_events();
 
         let thread_id = self.get_thread_id().await?;
         self.client.step_out(thread_id).await?;

@@ -66,7 +66,16 @@ steps:
     expect:
       reason: "step"
 
-  # 8. Check local variables
+  # 8. Step past sum assignment to make variable visible
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 9. Check local variables (now sum is available)
   - action: inspect_locals
     asserts:
       - name: "x"
@@ -82,12 +91,12 @@ steps:
       - index: 0
         function: "main.main"
 
-  # 10. Continue to exit
+  # 12. Continue to exit
   - action: command
     command: "continue"
 
-  # 11. Wait for program exit
+  # 13. Wait for program exit (Delve sends "terminated" event)
   - action: await
     timeout: 10
     expect:
-      reason: "exited"
+      reason: "terminated"

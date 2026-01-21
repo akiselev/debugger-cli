@@ -52,6 +52,7 @@ args = ["-m", "debugpy.adapter"]
 [adapters.go]
 path = "dlv"
 args = ["dap"]
+transport = "tcp"
 
 [defaults]
 adapter = "lldb-dap"

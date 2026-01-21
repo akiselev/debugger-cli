@@ -10,7 +10,7 @@ use crate::setup::installer::{
     PackageManager,
 };
 use crate::setup::registry::{DebuggerInfo, Platform};
-use crate::setup::verifier::{verify_dap_adapter, VerifyResult};
+use crate::setup::verifier::{verify_dap_adapter_tcp, VerifyResult};
 use async_trait::async_trait;
 use std::path::PathBuf;
 
@@ -118,8 +118,8 @@ impl Installer for DelveInstaller {
 
         match status {
             InstallStatus::Installed { path, .. } => {
-                // Delve uses 'dap' subcommand for DAP mode
-                verify_dap_adapter(&path, &["dap".to_string()]).await
+                // Delve uses TCP-based DAP mode with 'dap' subcommand
+                verify_dap_adapter_tcp(&path, &["dap".to_string()]).await
             }
             InstallStatus::Broken { reason, .. } => Ok(VerifyResult {
                 success: false,

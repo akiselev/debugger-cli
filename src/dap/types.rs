@@ -145,6 +145,14 @@ pub struct LaunchArguments {
     /// Only debug user code, skip library frames (debugpy)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub just_my_code: Option<bool>,
+
+    // === Delve (Go) specific ===
+    /// Launch mode: "exec" (precompiled), "debug" (build and run), "test", "replay", "core"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Stop at entry point (Delve uses stopAtEntry instead of stopOnEntry)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_at_entry: Option<bool>,
 }
 
 /// Attach request arguments
