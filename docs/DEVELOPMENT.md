@@ -21,7 +21,11 @@ Welcome to debugger-cli! This guide covers everything you need to contribute to 
 
 - Rust 1.70+ (`rustup update stable`)
 - A debug adapter for testing (see [README](../README.md#prerequisites))
-- Optional: `lldb-dap` or `codelldb` for end-to-end testing
+- Optional debug adapters for end-to-end testing:
+  - `lldb-dap` or `codelldb` for C/C++/Rust
+  - `delve` for Go
+  - `gdb` 14.1+ for GDB tests
+  - `cuda-gdb` for CUDA tests (Linux only)
 
 ```bash
 # Build the project

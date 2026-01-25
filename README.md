@@ -56,9 +56,11 @@ You need a DAP-compatible debug adapter. The easiest way is:
 debugger setup --list
 
 # Install for your language
-debugger setup lldb      # C, C++, Rust
+debugger setup lldb      # C, C++, Rust, Swift
 debugger setup python    # Python (debugpy)
-debugger setup go        # Go (delve)
+debugger setup go        # Go (Delve)
+debugger setup gdb       # C, C++ (requires GDB 14.1+)
+debugger setup cuda-gdb  # CUDA (Linux only)
 ```
 
 Or install manually:
@@ -110,6 +112,11 @@ debugger stop
 | `detach` | | Detach from process (keeps it running) |
 | `status` | | Show daemon and session status |
 | `restart` | | Restart program with same arguments |
+
+Start options:
+- `--adapter <name>` - Use specific debug adapter
+- `--stop-on-entry` - Stop at program entry point
+- `--break <location>` / `-b` - Set initial breakpoint(s) before program starts
 
 ### Breakpoints
 
@@ -216,22 +223,22 @@ codelldb = "~/.local/share/debugger-cli/adapters/codelldb/adapter/codelldb"
 | lldb-dap | C, C++, Rust, Swift | ✅ Full support |
 | CodeLLDB | C, C++, Rust | ✅ Full support |
 | debugpy | Python | ✅ Full support |
-| Delve | Go | 🚧 Planned  |
+| Delve | Go | ✅ Full support |
+| GDB | C, C++ | ✅ Full support (requires GDB 14.1+) |
+| CUDA-GDB | CUDA, C, C++ | ✅ Full support (Linux only) |
 | cpptools | C, C++ | 🚧 Planned |
 | js-debug | JavaScript, TypeScript | 🚧 Planned |
 
-## Example: Debugging a Rust Program
+## Examples
+
+### Debugging a Rust Program
 
 ```bash
-# Build your Rust program with debug info
+# Build with debug info
 cargo build
 
-# Start debugging
-debugger start ./target/debug/myprogram
-
-# Set breakpoints
-debugger break main
-debugger break src/lib.rs:42 --condition "x > 100"
+# Start debugging with initial breakpoint
+debugger start ./target/debug/myprogram --break main
 
 # Run to breakpoint
 debugger continue
@@ -244,26 +251,64 @@ debugger context
 #    13 |     let config = Config::load()?;
 #    14 |     let processor = Processor::new(config);
 # -> 15 |     processor.run()?;
-#    16 |     Ok(())
-#    17 | }
 #
 # Locals:
 #   config: Config { max_threads: 4, timeout: 30 }
-#   processor: Processor { ... }
 
 # Evaluate expressions
 debugger print config.max_threads
 # 4
 
-debugger print processor.stats()
-# ProcessorStats { processed: 0, errors: 0 }
-
 # Step through code
 debugger step
 debugger await
-debugger context
 
 # Clean up
+debugger stop
+```
+
+### Debugging a Go Program
+
+```bash
+# Build with debug info
+go build -gcflags="all=-N -l" -o myprogram
+
+# Start debugging
+debugger start ./myprogram --adapter go --break main.main
+
+# Continue to breakpoint
+debugger continue
+debugger await
+
+# Inspect goroutines
+debugger threads
+
+# View locals
+debugger locals
+
+# Clean up
+debugger stop
+```
+
+### Debugging CUDA Code (Linux)
+
+```bash
+# Compile with debug info
+nvcc -g -G -o cuda_program kernel.cu
+
+# Start debugging (uses cuda-gdb)
+debugger start ./cuda_program --adapter cuda-gdb --break main
+
+# Set kernel breakpoint
+debugger break vectorAdd
+
+# Run to kernel
+debugger continue
+debugger await
+
+# View CUDA threads
+debugger threads
+
 debugger stop
 ```
 

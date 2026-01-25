@@ -6,7 +6,6 @@ This folder contains developer documentation for debugger-cli.
 
 - [**README**](../README.md) - Project overview, installation, and usage
 - [**Changelog**](../CHANGELOG.md) - Version history and release notes
-- [**Progress**](../PROGRESS.md) - Implementation status and roadmap
 
 ## Developer Documentation
 
@@ -21,3 +20,5 @@ These are internal design documents created during development:
 - [plan/dap-reference.md](plan/dap-reference.md) - DAP protocol quick reference
 - [plan/setup-command.md](plan/setup-command.md) - Debug adapter installer design
 - [plan/e2e-tests.md](plan/e2e-tests.md) - End-to-end testing framework design
+- [plan/go-delve-support.md](plan/go-delve-support.md) - Go/Delve debugging support
+- [plan/cuda-gdb.md](plan/cuda-gdb.md) - GDB and CUDA-GDB support
