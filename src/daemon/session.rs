@@ -156,7 +156,7 @@ impl DebugSession {
                 DapClient::spawn(&adapter_config.path, &adapter_config.args).await?
             }
             TransportMode::Tcp => {
-                DapClient::spawn_tcp(&adapter_config.path, &adapter_config.args).await?
+                DapClient::spawn_tcp(&adapter_config.path, &adapter_config.args, &adapter_config.spawn_style).await?
             }
         };
 
@@ -176,12 +176,15 @@ impl DebugSession {
             .map(|p| p.to_string_lossy().into_owned());
 
         // Build launch arguments - adapter-specific fields
-        let is_python = adapter_name == "debugpy" 
+        let is_python = adapter_name == "debugpy"
             || program.extension().map(|e| e == "py").unwrap_or(false);
         let is_go = adapter_name == "go"
             || adapter_name == "delve"
             || adapter_name == "dlv";
-        
+        let is_javascript = adapter_name == "js-debug"
+            || program.extension().map(|e| e == "js").unwrap_or(false);
+        let is_typescript = program.extension().map(|e| e == "ts").unwrap_or(false);
+
         let launch_args = LaunchArguments {
             program: program.to_string_lossy().into_owned(),
             args: args.clone(),
@@ -202,6 +205,13 @@ impl DebugSession {
             stop_at_entry: if is_go && stop_on_entry { Some(true) } else { None },
             // GDB-based adapters (gdb, cuda-gdb) use stopAtBeginningOfMainSubprogram
             stop_at_beginning_of_main_subprogram: if (adapter_name == "gdb" || adapter_name == "cuda-gdb") && stop_on_entry { Some(true) } else { None },
+            // js-debug specific
+            type_attr: if is_javascript || is_typescript { Some("pwa-node".to_string()) } else { None },
+            source_maps: if is_typescript { Some(true) } else { None },
+            out_files: None,
+            runtime_executable: None,
+            runtime_args: None,
+            skip_files: None,
         };
 
         tracing::debug!(
@@ -371,7 +381,7 @@ impl DebugSession {
                 DapClient::spawn(&adapter_config.path, &adapter_config.args).await?
             }
             TransportMode::Tcp => {
-                DapClient::spawn_tcp(&adapter_config.path, &adapter_config.args).await?
+                DapClient::spawn_tcp(&adapter_config.path, &adapter_config.args, &adapter_config.spawn_style).await?
             }
         };
 

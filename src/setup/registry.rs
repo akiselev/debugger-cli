@@ -108,6 +108,14 @@ static DEBUGGERS: &[DebuggerInfo] = &[
         description: "Go debugger with DAP support",
         primary: true,
     },
+    DebuggerInfo {
+        id: "js-debug",
+        name: "js-debug",
+        languages: &["javascript", "typescript"],
+        platforms: &[Platform::Linux, Platform::MacOS, Platform::Windows],
+        description: "Microsoft's JavaScript/TypeScript debugger",
+        primary: true,
+    },
 ];
 
 /// Get all registered debuggers
@@ -146,6 +154,7 @@ pub fn get_installer(id: &str) -> Option<Arc<dyn Installer>> {
         "codelldb" => Some(Arc::new(adapters::codelldb::CodeLldbInstaller)),
         "python" => Some(Arc::new(adapters::debugpy::DebugpyInstaller)),
         "go" => Some(Arc::new(adapters::delve::DelveInstaller)),
+        "js-debug" => Some(Arc::new(adapters::js_debug::JsDebugInstaller)),
         _ => None,
     }
 }

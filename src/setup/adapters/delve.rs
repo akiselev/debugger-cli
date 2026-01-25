@@ -119,7 +119,7 @@ impl Installer for DelveInstaller {
         match status {
             InstallStatus::Installed { path, .. } => {
                 // Delve uses TCP-based DAP mode with 'dap' subcommand
-                verify_dap_adapter_tcp(&path, &["dap".to_string()]).await
+                verify_dap_adapter_tcp(&path, &["dap".to_string()], crate::common::config::TcpSpawnStyle::TcpListen).await
             }
             InstallStatus::Broken { reason, .. } => Ok(VerifyResult {
                 success: false,

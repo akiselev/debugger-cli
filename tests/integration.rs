@@ -144,6 +144,52 @@ impl TestContext {
         self.create_config_with_args(adapter_name, adapter_path, &[]);
     }
 
+    /// Create a config file for a TCP adapter
+    fn create_config_with_tcp(
+        &self,
+        adapter_name: &str,
+        adapter_path: &str,
+        args: &[&str],
+        spawn_style: &str,
+    ) {
+        let args_str = args.iter()
+            .map(|a| format!("\"{}\"", a))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let config_content = format!(
+            r#"
+[adapters.{adapter_name}]
+path = "{adapter_path}"
+args = [{args_str}]
+transport = "tcp"
+spawn_style = "{spawn_style}"
+
+[defaults]
+adapter = "{adapter_name}"
+
+[timeouts]
+dap_initialize_secs = 10
+dap_request_secs = 30
+await_default_secs = 60
+
+[daemon]
+idle_timeout_minutes = 5
+
+[output]
+max_events = 1000
+max_bytes_mb = 1
+"#,
+            adapter_name = adapter_name,
+            adapter_path = adapter_path,
+            args_str = args_str,
+            spawn_style = spawn_style,
+        );
+
+        let config_path = self.config_dir.join("debugger-cli").join("config.toml");
+        fs::create_dir_all(config_path.parent().unwrap()).expect("Failed to create config dir");
+        fs::write(&config_path, config_content).expect("Failed to write config");
+    }
+
     /// Create a config file for the test with custom args
     fn create_config_with_args(&self, adapter_name: &str, adapter_path: &str, args: &[&str]) {
         let args_str = args.iter()
@@ -333,6 +379,20 @@ fn cuda_gdb_available() -> Option<PathBuf> {
     }
 
     which::which("cuda-gdb").ok()
+}
+
+/// Checks if js-debug is available for testing
+fn js_debug_available() -> Option<PathBuf> {
+    let adapter_dir = debugger::setup::installer::adapters_dir().join("js-debug");
+    let dap_path = adapter_dir.join("node_modules/js-debug/src/dapDebugServer.js");
+    if dap_path.exists() {
+        return Some(dap_path);
+    }
+    let dap_path = adapter_dir.join("node_modules/js-debug/dist/src/dapDebugServer.js");
+    if dap_path.exists() {
+        return Some(dap_path);
+    }
+    None
 }
 
 // ============== Tests ==============
@@ -833,4 +893,285 @@ fn test_config_loading() {
         !output.success || output.stderr.contains("not found") || output.stderr.contains("Failed"),
         "Expected failure for nonexistent adapter"
     );
+}
+
+#[test]
+#[ignore = "requires js-debug"]
+fn test_basic_debugging_workflow_js() {
+    let js_debug_path = match js_debug_available() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: js-debug not available");
+            eprintln!("Install with: debugger install js-debug");
+            return;
+        }
+    };
+
+    let node_path = match which::which("node") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("Skipping test: Node.js not available");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("basic_workflow_js");
+    ctx.create_config_with_tcp(
+        "js-debug",
+        node_path.to_str().unwrap(),
+        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
+        "port_argument",
+    );
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let js_fixture = PathBuf::from(manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("simple.js");
+
+    let markers = ctx.find_breakpoint_markers(&js_fixture);
+    let main_start_line = markers.get("main_start").expect("Missing main_start marker");
+
+    ctx.cleanup_daemon();
+
+    let output = ctx.run_debugger_ok(&[
+        "start",
+        js_fixture.to_str().unwrap(),
+        "--stop-on-entry",
+    ]);
+    assert!(output.contains("Started debugging") || output.contains("Stopped"));
+
+    let bp_location = format!("simple.js:{}", main_start_line);
+    let output = ctx.run_debugger_ok(&["break", &bp_location]);
+    assert!(output.contains("Breakpoint") || output.contains("breakpoint"));
+
+    let output = ctx.run_debugger_ok(&["continue"]);
+    assert!(output.contains("Continuing") || output.contains("running"));
+
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "30"]);
+    assert!(
+        output.contains("Stopped") || output.contains("breakpoint"),
+        "Expected stop at breakpoint: {}",
+        output
+    );
+
+    let output = ctx.run_debugger_ok(&["backtrace"]);
+    assert!(output.contains("main") || output.contains("#0"));
+
+    let output = ctx.run_debugger_ok(&["locals"]);
+    assert!(
+        output.contains("x") || output.contains("Local"),
+        "Expected locals output: {}",
+        output
+    );
+
+    let _ = ctx.run_debugger(&["continue"]);
+    let output = ctx.run_debugger(&["await", "--timeout", "10"]);
+    assert!(
+        output.stdout.contains("exited") || output.stdout.contains("terminated") ||
+        output.stderr.contains("exited") || output.stderr.contains("terminated") ||
+        output.stdout.contains("stopped"),
+        "Expected program to finish: {:?}",
+        output
+    );
+
+    let _ = ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "requires js-debug"]
+fn test_basic_debugging_workflow_ts() {
+    let js_debug_path = match js_debug_available() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: js-debug not available");
+            eprintln!("Install with: debugger install js-debug");
+            return;
+        }
+    };
+
+    let node_path = match which::which("node") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("Skipping test: Node.js not available");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("basic_workflow_ts");
+    ctx.create_config_with_tcp(
+        "js-debug",
+        node_path.to_str().unwrap(),
+        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
+        "port_argument",
+    );
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let ts_fixture = PathBuf::from(manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("dist")
+        .join("simple.js");
+
+    if !ts_fixture.exists() {
+        eprintln!("Skipping test: TypeScript fixture not compiled");
+        eprintln!("Run: cd tests/fixtures && npx tsc simple.ts --outDir dist --sourceMap");
+        return;
+    }
+
+    let markers = ctx.find_breakpoint_markers(&PathBuf::from(manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("simple.ts"));
+    let main_start_line = markers.get("main_start").expect("Missing main_start marker");
+
+    ctx.cleanup_daemon();
+
+    let output = ctx.run_debugger_ok(&[
+        "start",
+        ts_fixture.to_str().unwrap(),
+        "--stop-on-entry",
+    ]);
+    assert!(output.contains("Started debugging") || output.contains("Stopped"));
+
+    let bp_location = format!("simple.ts:{}", main_start_line);
+    let output = ctx.run_debugger_ok(&["break", &bp_location]);
+    assert!(output.contains("Breakpoint") || output.contains("breakpoint"));
+
+    let output = ctx.run_debugger_ok(&["continue"]);
+    assert!(output.contains("Continuing") || output.contains("running"));
+
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "30"]);
+    assert!(
+        output.contains("Stopped") || output.contains("breakpoint"),
+        "Expected stop at breakpoint: {}",
+        output
+    );
+
+    let output = ctx.run_debugger_ok(&["backtrace"]);
+    assert!(output.contains("main") || output.contains("#0"));
+
+    let _ = ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "requires js-debug"]
+fn test_stepping_js() {
+    let js_debug_path = match js_debug_available() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: js-debug not available");
+            return;
+        }
+    };
+
+    let node_path = match which::which("node") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("Skipping test: Node.js not available");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("stepping_js");
+    ctx.create_config_with_tcp(
+        "js-debug",
+        node_path.to_str().unwrap(),
+        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
+        "port_argument",
+    );
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let js_fixture = PathBuf::from(manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("simple.js");
+
+    let markers = ctx.find_breakpoint_markers(&js_fixture);
+    let before_add_line = markers.get("before_add").expect("Missing before_add marker");
+
+    ctx.cleanup_daemon();
+
+    ctx.run_debugger_ok(&["start", js_fixture.to_str().unwrap(), "--stop-on-entry"]);
+
+    let bp_location = format!("simple.js:{}", before_add_line);
+    ctx.run_debugger_ok(&["break", &bp_location]);
+    ctx.run_debugger_ok(&["continue"]);
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "30"]);
+    assert!(output.contains("Stopped") || output.contains("breakpoint"));
+
+    ctx.run_debugger_ok(&["step"]);
+    let _output = ctx.run_debugger_ok(&["await", "--timeout", "10"]);
+
+    let output = ctx.run_debugger_ok(&["backtrace"]);
+    assert!(
+        output.contains("add") || output.contains("simple.js"),
+        "Expected to be in add(): {}",
+        output
+    );
+
+    ctx.run_debugger_ok(&["finish"]);
+    let _ = ctx.run_debugger(&["await", "--timeout", "10"]);
+
+    let output = ctx.run_debugger_ok(&["backtrace"]);
+    assert!(output.contains("main"), "Expected to be in main(): {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+#[ignore = "requires js-debug"]
+fn test_expression_evaluation_js() {
+    let js_debug_path = match js_debug_available() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: js-debug not available");
+            return;
+        }
+    };
+
+    let node_path = match which::which("node") {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("Skipping test: Node.js not available");
+            return;
+        }
+    };
+
+    let ctx = TestContext::new("eval_js");
+    ctx.create_config_with_tcp(
+        "js-debug",
+        node_path.to_str().unwrap(),
+        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
+        "port_argument",
+    );
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let js_fixture = PathBuf::from(manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("simple.js");
+
+    let markers = ctx.find_breakpoint_markers(&js_fixture);
+    let before_add_line = markers.get("before_add").expect("Missing before_add marker");
+
+    ctx.cleanup_daemon();
+
+    ctx.run_debugger_ok(&["start", js_fixture.to_str().unwrap(), "--stop-on-entry"]);
+
+    let bp_location = format!("simple.js:{}", before_add_line);
+    ctx.run_debugger_ok(&["break", &bp_location]);
+    ctx.run_debugger_ok(&["continue"]);
+    ctx.run_debugger_ok(&["await", "--timeout", "30"]);
+
+    let output = ctx.run_debugger_ok(&["print", "x"]);
+    assert!(output.contains("10") || output.contains("x ="), "Expected x=10: {}", output);
+
+    let output = ctx.run_debugger_ok(&["print", "y"]);
+    assert!(output.contains("20") || output.contains("y ="), "Expected y=20: {}", output);
+
+    let output = ctx.run_debugger_ok(&["print", "x + y"]);
+    assert!(output.contains("30"), "Expected x+y=30: {}", output);
+
+    ctx.run_debugger(&["stop"]);
 }
