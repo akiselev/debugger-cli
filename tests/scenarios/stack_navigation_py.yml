@@ -5,7 +5,7 @@ name: "Python Stack Navigation Test"
 description: "Verifies stack frame navigation works correctly"
 
 target:
-  program: "tests/fixtures/simple.py"
+  program: "../fixtures/simple.py"
   args: []
   adapter: "python"
   stop_on_entry: true

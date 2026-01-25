@@ -8,7 +8,7 @@ setup:
   - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
 
 target:
-  program: "tests/fixtures/test_simple_c"
+  program: "../fixtures/test_simple_c"
   args: []
   stop_on_entry: true
 

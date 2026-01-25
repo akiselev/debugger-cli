@@ -5,7 +5,7 @@ name: "Python Conditional Breakpoint Test"
 description: "Verifies conditional breakpoints stop only when condition is true"
 
 target:
-  program: "tests/fixtures/simple.py"
+  program: "../fixtures/simple.py"
   args: []
   adapter: "python"
   stop_on_entry: true

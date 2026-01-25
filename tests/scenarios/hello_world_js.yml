@@ -6,7 +6,7 @@ description: "Verifies basic JavaScript debugging functionality with Node.js"
 
 # Debug target configuration
 target:
-  program: "tests/e2e/hello_world.js"
+  program: "../e2e/hello_world.js"
   args: []
   adapter: "js-debug"
   stop_on_entry: true

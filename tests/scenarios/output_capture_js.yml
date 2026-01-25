@@ -5,7 +5,7 @@ name: "JavaScript Output Capture Test"
 description: "Verifies output command captures stdout correctly"
 
 target:
-  program: "tests/fixtures/simple.js"
+  program: "../fixtures/simple.js"
   args: []
   adapter: "js-debug"
   stop_on_entry: true

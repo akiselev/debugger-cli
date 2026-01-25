@@ -5,7 +5,7 @@ name: "JavaScript Stack Navigation Test"
 description: "Verifies stack frame navigation works correctly"
 
 target:
-  program: "tests/fixtures/simple.js"
+  program: "../fixtures/simple.js"
   args: []
   adapter: "js-debug"
   stop_on_entry: true

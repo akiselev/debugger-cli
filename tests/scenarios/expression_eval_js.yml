@@ -6,7 +6,7 @@ description: "Verifies expression evaluation in debug context"
 
 # Debug target configuration
 target:
-  program: "tests/fixtures/simple.js"
+  program: "../fixtures/simple.js"
   args: []
   adapter: "js-debug"
   stop_on_entry: true

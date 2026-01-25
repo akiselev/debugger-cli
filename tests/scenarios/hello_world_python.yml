@@ -8,7 +8,7 @@ description: "Verifies basic Python debugging functionality"
 
 # Debug target configuration
 target:
-  program: "tests/e2e/hello_world.py"
+  program: "../e2e/hello_world.py"
   args: []
   adapter: "debugpy"
   stop_on_entry: true

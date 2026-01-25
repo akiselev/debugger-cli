@@ -11,7 +11,7 @@ setup:
 # Debug target configuration
 # Note: We debug the compiled JS but set breakpoints in TS source
 target:
-  program: "tests/e2e/dist/hello_world.js"
+  program: "../e2e/dist/hello_world.js"
   args: []
   adapter: "js-debug"
   stop_on_entry: true

@@ -10,7 +10,7 @@ setup:
 
 # Debug target configuration
 target:
-  program: "tests/e2e/test_c"
+  program: "../e2e/test_c"
   args: []
   stop_on_entry: true
 

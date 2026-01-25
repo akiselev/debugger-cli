@@ -8,7 +8,7 @@ setup:
   - shell: "gcc -g -pthread tests/fixtures/threaded.c -o tests/fixtures/test_threaded_c"
 
 target:
-  program: "tests/fixtures/test_threaded_c"
+  program: "../fixtures/test_threaded_c"
   args: []
   stop_on_entry: true
 

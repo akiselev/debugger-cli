@@ -5,7 +5,7 @@ name: "Python Output Capture Test"
 description: "Verifies output command captures stdout correctly"
 
 target:
-  program: "tests/fixtures/simple.py"
+  program: "../fixtures/simple.py"
   args: []
   adapter: "python"
   stop_on_entry: true

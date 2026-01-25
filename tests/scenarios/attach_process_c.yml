@@ -15,7 +15,7 @@ setup:
 
 target:
   # Attach mode uses pid_file field to read PID from setup step
-  program: "tests/fixtures/test_attach_c"
+  program: "../fixtures/test_attach_c"
   mode: "attach"
   pid_file: "/tmp/attach_pid.txt"
   adapter: "lldb"
