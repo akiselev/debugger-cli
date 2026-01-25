@@ -5,8 +5,52 @@
 
 #define NUM_THREADS 2
 
+// Portable barrier implementation (macOS lacks pthread_barrier_t)
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int count;
+    int waiting;
+    int phase;
+} portable_barrier_t;
+
+int portable_barrier_init(portable_barrier_t *barrier, int count) {
+    barrier->count = count;
+    barrier->waiting = 0;
+    barrier->phase = 0;
+    if (pthread_mutex_init(&barrier->mutex, NULL) != 0) return -1;
+    if (pthread_cond_init(&barrier->cond, NULL) != 0) {
+        pthread_mutex_destroy(&barrier->mutex);
+        return -1;
+    }
+    return 0;
+}
+
+int portable_barrier_wait(portable_barrier_t *barrier) {
+    pthread_mutex_lock(&barrier->mutex);
+    int my_phase = barrier->phase;
+    barrier->waiting++;
+    if (barrier->waiting == barrier->count) {
+        barrier->waiting = 0;
+        barrier->phase++;
+        pthread_cond_broadcast(&barrier->cond);
+    } else {
+        while (my_phase == barrier->phase) {
+            pthread_cond_wait(&barrier->cond, &barrier->mutex);
+        }
+    }
+    pthread_mutex_unlock(&barrier->mutex);
+    return 0;
+}
+
+int portable_barrier_destroy(portable_barrier_t *barrier) {
+    pthread_mutex_destroy(&barrier->mutex);
+    pthread_cond_destroy(&barrier->cond);
+    return 0;
+}
+
 // Shared state
-pthread_barrier_t barrier;
+portable_barrier_t barrier;
 pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
 int shared_counter = 0;
 
@@ -29,7 +73,7 @@ void* thread_func(void* arg) {
     // BREAKPOINT_MARKER: thread_entry (BEFORE barrier - do NOT break here)
     // Breaking here causes deadlock: debugger stops this thread while other threads
     // wait for all NUM_THREADS+1 threads (including stopped one) to reach barrier
-    pthread_barrier_wait(&barrier);
+    portable_barrier_wait(&barrier);
 
     // BREAKPOINT_MARKER: after_barrier (SAFE to break here - all threads synchronized)
     worker_body(thread_id);
@@ -41,7 +85,7 @@ int main(int argc, char *argv[]) {
     int thread_ids[NUM_THREADS];
 
     // Initialize barrier for main thread + worker threads
-    if (pthread_barrier_init(&barrier, NULL, NUM_THREADS + 1) != 0) {
+    if (portable_barrier_init(&barrier, NUM_THREADS + 1) != 0) {
         fprintf(stderr, "Failed to initialize barrier\n");
         return 1;
     }
@@ -59,7 +103,7 @@ int main(int argc, char *argv[]) {
     }
 
     // BREAKPOINT_MARKER: main_wait
-    pthread_barrier_wait(&barrier);
+    portable_barrier_wait(&barrier);
 
     // Join all threads
     for (int i = 0; i < NUM_THREADS; i++) {
@@ -67,6 +111,6 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Final counter value: %d\n", shared_counter);
-    pthread_barrier_destroy(&barrier);
+    portable_barrier_destroy(&barrier);
     return 0;
 }

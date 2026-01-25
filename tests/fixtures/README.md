@@ -33,7 +33,8 @@ Multithreaded programs with synchronization. Used for testing thread listing and
 
 **C (threaded.c):**
 - 2 worker threads using pthreads
-- `pthread_barrier_t` synchronizes main + workers (3 threads total)
+- Portable barrier (mutex + condvar) synchronizes main + workers (3 threads total)
+- Works on both Linux and macOS (macOS lacks pthread_barrier_t)
 - Shared counter protected by mutex
 - `worker_body(thread_id)` - Helper function called AFTER barrier (safe breakpoint target)
 
