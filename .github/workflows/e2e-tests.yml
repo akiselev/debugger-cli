@@ -75,10 +75,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lldb gcc
 
+      - name: Install build tools (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install gcc || true
+
       - name: Compile C test fixtures
         run: |
           gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c || true
           gcc -g tests/e2e/hello_world.c -o tests/e2e/test_c || true
+          gcc -g -pthread tests/fixtures/threaded.c -o tests/fixtures/test_threaded_c || true
 
       - name: Compile Rust test fixtures
         run: |
@@ -95,6 +100,38 @@ jobs:
 
       - name: Run Complex Verification Test
         run: ./target/release/debugger test tests/scenarios/complex_verification.yml --verbose
+        continue-on-error: true
+
+      - name: Run Conditional Breakpoint Test
+        run: ./target/release/debugger test tests/scenarios/conditional_breakpoint_c.yml --verbose
+        continue-on-error: true
+
+      - name: Run Hit Count Breakpoint Test
+        run: ./target/release/debugger test tests/scenarios/hitcount_breakpoint_c.yml --verbose
+        continue-on-error: true
+
+      - name: Run Breakpoint Management Test
+        run: ./target/release/debugger test tests/scenarios/breakpoint_management_c.yml --verbose
+        continue-on-error: true
+
+      - name: Run Stack Navigation Test
+        run: ./target/release/debugger test tests/scenarios/stack_navigation_c.yml --verbose
+        continue-on-error: true
+
+      - name: Run Output Capture Test
+        run: ./target/release/debugger test tests/scenarios/output_capture_c.yml --verbose
+        continue-on-error: true
+
+      - name: Run Program Restart Test
+        run: ./target/release/debugger test tests/scenarios/program_restart_c.yml --verbose
+        continue-on-error: true
+
+      - name: Run Pause Resume Test
+        run: ./target/release/debugger test tests/scenarios/pause_resume_c.yml --verbose
+        continue-on-error: true
+
+      - name: Run Thread List Test
+        run: ./target/release/debugger test tests/scenarios/thread_list_c.yml --verbose
         continue-on-error: true
 
       - name: Cleanup daemon
@@ -142,6 +179,7 @@ jobs:
         run: |
           go build -gcflags='all=-N -l' -o tests/e2e/test_go tests/e2e/hello_world.go
           go build -gcflags='all=-N -l' -o tests/fixtures/test_simple_go tests/fixtures/simple.go
+          go build -gcflags='all=-N -l' -o tests/fixtures/test_threaded_go tests/fixtures/threaded.go
 
       - name: Run Go Hello World Test
         run: ./target/release/debugger test tests/scenarios/hello_world_go.yml --verbose
@@ -149,6 +187,30 @@ jobs:
 
       - name: Run Go Complex Test
         run: ./target/release/debugger test tests/scenarios/complex_go.yml --verbose
+        continue-on-error: true
+
+      - name: Run Conditional Breakpoint Test
+        run: ./target/release/debugger test tests/scenarios/conditional_breakpoint_go.yml --verbose
+        continue-on-error: true
+
+      - name: Run Hit Count Breakpoint Test
+        run: ./target/release/debugger test tests/scenarios/hitcount_breakpoint_go.yml --verbose
+        continue-on-error: true
+
+      - name: Run Stack Navigation Test
+        run: ./target/release/debugger test tests/scenarios/stack_navigation_go.yml --verbose
+        continue-on-error: true
+
+      - name: Run Output Capture Test
+        run: ./target/release/debugger test tests/scenarios/output_capture_go.yml --verbose
+        continue-on-error: true
+
+      - name: Run Program Restart Test
+        run: ./target/release/debugger test tests/scenarios/program_restart_go.yml --verbose
+        continue-on-error: true
+
+      - name: Run Thread List Test
+        run: ./target/release/debugger test tests/scenarios/thread_list_go.yml --verbose
         continue-on-error: true
 
       - name: Cleanup daemon
@@ -194,6 +256,18 @@ jobs:
 
       - name: Run Python Hello World Test
         run: ./target/release/debugger test tests/scenarios/hello_world_python.yml --verbose
+        continue-on-error: true
+
+      - name: Run Conditional Breakpoint Test
+        run: ./target/release/debugger test tests/scenarios/conditional_breakpoint_py.yml --verbose
+        continue-on-error: true
+
+      - name: Run Stack Navigation Test
+        run: ./target/release/debugger test tests/scenarios/stack_navigation_py.yml --verbose
+        continue-on-error: true
+
+      - name: Run Output Capture Test
+        run: ./target/release/debugger test tests/scenarios/output_capture_py.yml --verbose
         continue-on-error: true
 
       - name: Cleanup daemon
@@ -264,6 +338,18 @@ jobs:
         run: ./target/release/debugger test tests/scenarios/expression_eval_js.yml --verbose
         continue-on-error: true
 
+      - name: Run Conditional Breakpoint Test
+        run: ./target/release/debugger test tests/scenarios/conditional_breakpoint_js.yml --verbose
+        continue-on-error: true
+
+      - name: Run Stack Navigation Test
+        run: ./target/release/debugger test tests/scenarios/stack_navigation_js.yml --verbose
+        continue-on-error: true
+
+      - name: Run Output Capture Test
+        run: ./target/release/debugger test tests/scenarios/output_capture_js.yml --verbose
+        continue-on-error: true
+
       - name: Cleanup daemon
         if: always()
         run: pkill -f "debugger daemon" || true
@@ -313,9 +399,42 @@ jobs:
         run: |
           gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c
           gcc -g tests/e2e/hello_world.c -o tests/e2e/test_c
+          gcc -g -pthread tests/fixtures/threaded.c -o tests/fixtures/test_threaded_c
 
       - name: Run C Hello World Test with GDB
         run: ./target/release/debugger test tests/scenarios/hello_world_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Conditional Breakpoint Test with GDB
+        run: ./target/release/debugger test tests/scenarios/conditional_breakpoint_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Hit Count Breakpoint Test with GDB
+        run: ./target/release/debugger test tests/scenarios/hitcount_breakpoint_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Breakpoint Management Test with GDB
+        run: ./target/release/debugger test tests/scenarios/breakpoint_management_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Stack Navigation Test with GDB
+        run: ./target/release/debugger test tests/scenarios/stack_navigation_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Output Capture Test with GDB
+        run: ./target/release/debugger test tests/scenarios/output_capture_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Program Restart Test with GDB
+        run: ./target/release/debugger test tests/scenarios/program_restart_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Pause Resume Test with GDB
+        run: ./target/release/debugger test tests/scenarios/pause_resume_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Thread List Test with GDB
+        run: ./target/release/debugger test tests/scenarios/thread_list_c.yml --adapter gdb --verbose
         continue-on-error: true
 
       - name: Cleanup daemon
@@ -327,6 +446,115 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gdb-logs
+          path: ~/.local/share/debugger/logs/
+
+  # GDB tests on macOS - with Homebrew installation
+  test-gdb-macos:
+    name: GDB Tests (macOS)
+    needs: build
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download debugger binary
+        uses: actions/download-artifact@v4
+        with:
+          name: debugger-macos-latest
+          path: target/release/
+
+      - name: Make debugger executable
+        run: chmod +x target/release/debugger
+
+      - name: Install GDB via Homebrew
+        id: install-gdb
+        run: |
+          brew install gdb || echo "gdb_install_failed=true" >> $GITHUB_OUTPUT
+          if command -v gdb &> /dev/null; then
+            echo "GDB installed successfully"
+            gdb --version | head -1
+            echo "gdb_available=true" >> $GITHUB_OUTPUT
+          else
+            echo "GDB installation failed or not available"
+            echo "gdb_available=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Node.js and cdt-gdb-adapter
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install cdt-gdb-adapter (for GDB < 14.1)
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: npm install -g cdt-gdb-adapter || true
+
+      - name: Compile C test fixtures
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: |
+          gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c
+          gcc -g tests/e2e/hello_world.c -o tests/e2e/test_c
+          gcc -g -pthread tests/fixtures/threaded.c -o tests/fixtures/test_threaded_c
+
+      - name: Run C Hello World Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/hello_world_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Conditional Breakpoint Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/conditional_breakpoint_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Hit Count Breakpoint Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/hitcount_breakpoint_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Breakpoint Management Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/breakpoint_management_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Stack Navigation Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/stack_navigation_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Output Capture Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/output_capture_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Program Restart Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/program_restart_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Pause Resume Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/pause_resume_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Run Thread List Test with GDB
+        if: steps.install-gdb.outputs.gdb_available == 'true'
+        run: ./target/release/debugger test tests/scenarios/thread_list_c.yml --adapter gdb --verbose
+        continue-on-error: true
+
+      - name: Skip tests if GDB unavailable
+        if: steps.install-gdb.outputs.gdb_available != 'true'
+        run: echo "Skipping GDB tests - GDB not available on macOS"
+
+      - name: Cleanup daemon
+        if: always()
+        run: pkill -f "debugger daemon" || true
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdb-macos-logs
           path: ~/.local/share/debugger/logs/
 
   # Integration tests with Rust test framework
@@ -397,7 +625,7 @@ jobs:
   # Summary job
   e2e-summary:
     name: E2E Test Summary
-    needs: [test-lldb, test-delve, test-debugpy, test-js-debug, test-gdb, integration-tests]
+    needs: [test-lldb, test-delve, test-debugpy, test-js-debug, test-gdb, test-gdb-macos, integration-tests]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -412,6 +640,7 @@ jobs:
           echo "| debugpy | ${{ needs.test-debugpy.result }} |"
           echo "| js-debug | ${{ needs.test-js-debug.result }} |"
           echo "| GDB | ${{ needs.test-gdb.result }} |"
+          echo "| GDB (macOS) | ${{ needs.test-gdb-macos.result }} |"
           echo "| Integration | ${{ needs.integration-tests.result }} |"
           echo ""
           echo "All test suites completed."

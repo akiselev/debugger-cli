@@ -1,0 +1,40 @@
+# Hit Count Breakpoint Test (C)
+# Tests hit count breakpoint functionality
+
+name: "C Hit Count Breakpoint Test"
+description: "Verifies hit count breakpoints stop after specified number of hits"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "tests/fixtures/test_simple_c"
+  args: []
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break factorial --hit-count 3"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "factorial"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

@@ -1,0 +1,55 @@
+# Breakpoint Management Test (C)
+# Tests adding, listing, and removing breakpoints
+
+name: "C Breakpoint Management Test"
+description: "Verifies breakpoint list and remove commands work correctly"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "tests/fixtures/test_simple_c"
+  args: []
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break main"
+    expect:
+      success: true
+
+  - action: command
+    command: "break add"
+    expect:
+      success: true
+
+  - action: command
+    command: "breakpoint list"
+    expect:
+      output_contains: "main"
+
+  - action: command
+    command: "breakpoint list"
+    expect:
+      output_contains: "add"
+
+  - action: command
+    command: "breakpoint remove 1"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

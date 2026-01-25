@@ -221,13 +221,13 @@ codelldb = "~/.local/share/debugger-cli/adapters/codelldb/adapter/codelldb"
 | Adapter | Languages | Status |
 |---------|-----------|--------|
 | lldb-dap | C, C++, Rust, Swift | ✅ Full support |
-| CodeLLDB | C, C++, Rust | ✅ Full support |
 | debugpy | Python | ✅ Full support |
 | Delve | Go | ✅ Full support |
 | GDB | C, C++ | ✅ Full support (requires GDB 14.1+) |
 | CUDA-GDB | CUDA, C, C++ | ✅ Full support (Linux only) |
+| js-debug | JavaScript, TypeScript | ✅ Full support |
+| CodeLLDB | C, C++, Rust | 🚧 Planned |
 | cpptools | C, C++ | 🚧 Planned |
-| js-debug | JavaScript, TypeScript | 🚧 Planned |
 
 ## Examples
 

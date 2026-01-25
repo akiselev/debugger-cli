@@ -1,0 +1,48 @@
+# Output Capture Test (Go)
+# Tests output capture functionality
+
+name: "Go Output Capture Test"
+description: "Verifies output command captures stdout correctly"
+
+setup:
+  - shell: "go build -gcflags='all=-N -l' -o tests/fixtures/test_simple_go tests/fixtures/simple.go"
+
+target:
+  program: "../fixtures/test_simple_go"
+  args: []
+  adapter: "go"
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break main.main"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "terminated"
+
+  - action: check_output
+    contains: "Sum:"
+
+  - action: check_output
+    contains: "Factorial:"
+
+  # Test --tail flag returns only last line
+  - action: command
+    command: "output --tail 1"
+    expect:
+      output_contains: "Factorial:"

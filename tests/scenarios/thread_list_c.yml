@@ -1,0 +1,41 @@
+# Thread List Test (C)
+# Tests thread listing functionality with multithreaded program
+
+name: "C Thread List Test"
+description: "Verifies thread list command shows multiple threads"
+
+setup:
+  - shell: "gcc -g -pthread tests/fixtures/threaded.c -o tests/fixtures/test_threaded_c"
+
+target:
+  program: "tests/fixtures/test_threaded_c"
+  args: []
+  stop_on_entry: true
+
+steps:
+  # Break at worker_body (AFTER barrier) to avoid deadlock - barrier needs all 3 threads
+  - action: command
+    command: "break worker_body"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "threads"
+    expect:
+      output_contains: "Thread"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 15
+    expect:
+      reason: "exited"

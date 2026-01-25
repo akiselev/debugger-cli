@@ -1,0 +1,45 @@
+# Output Capture Test (Python)
+# Tests output capture functionality
+
+name: "Python Output Capture Test"
+description: "Verifies output command captures stdout correctly"
+
+target:
+  program: "tests/fixtures/simple.py"
+  args: []
+  adapter: "python"
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break main"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"
+
+  - action: check_output
+    contains: "Sum:"
+
+  - action: check_output
+    contains: "Factorial:"
+
+  # Test --tail flag returns only last line
+  - action: command
+    command: "output --tail 1"
+    expect:
+      output_contains: "Factorial:"

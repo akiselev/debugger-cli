@@ -1,0 +1,50 @@
+# Program Restart Test (C)
+# Tests restart command functionality
+
+name: "C Program Restart Test"
+description: "Verifies restart command restarts program from beginning"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "tests/fixtures/test_simple_c"
+  args: []
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break main"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "restart"
+    expect:
+      success: true
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "main"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"
