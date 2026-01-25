@@ -35,7 +35,7 @@ steps:
       reason: "exited"
 
   - action: check_output
-    contains: "Sumx:"
+    contains: "Sum:"
 
   - action: check_output
     contains: "Factorial:"
