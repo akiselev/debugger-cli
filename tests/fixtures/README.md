@@ -56,6 +56,10 @@ Multithreaded programs with synchronization. Used for testing thread listing and
 
 Breaking at `thread_entry` or `thread_func` (before barrier) causes deadlock. The debugger stops one thread while the barrier waits for all 3 threads (main + 2 workers) to synchronize. Use `worker_body` function (recommended) or `after_barrier` line marker instead.
 
+**Why pthread_barrier instead of mutex/condvar?**
+
+Mutex/condvar synchronization allows non-deterministic thread interleavings - the debugger might stop threads in different orders on different runs, causing flaky tests. Barriers guarantee ALL threads reach the sync point before ANY proceed, making test behavior deterministic. The portable barrier implementation (mutex + condvar + counter) provides barrier semantics on macOS which lacks native `pthread_barrier_t`.
+
 **Output:**
 ```
 Starting 2 worker threads
@@ -108,3 +112,44 @@ python3 tests/fixtures/simple.py
 ```
 
 Compilation commands are included in scenario `setup:` steps.
+
+### attach_target.c
+
+Long-running program for attach mode tests. Loops for 30 seconds with 1-second sleeps, allowing time for attach operations.
+
+**Purpose:** Test attaching debugger to running process (vs launching new process)
+
+**BREAKPOINT_MARKERs:**
+- `loop_body` - Inside the main loop (safe breakpoint target)
+
+**Output:**
+```
+PID: <process_id>
+```
+
+### multi_source/ (Directory)
+
+Multi-file C project for testing cross-file debugging.
+
+**Files:**
+- `main.c` - Entry point, calls helper functions
+- `utils.c` - Helper function implementations
+- `utils.h` - Function declarations
+
+**BREAKPOINT_MARKERs:**
+- `main_start` - Entry point in main.c
+- `before_helper_call` - Before calling utils.c functions
+- `helper_add_body` - Inside helper_add() in utils.c
+- `helper_multiply_body` - Inside helper_multiply() in utils.c
+- `before_exit` - Final marker in main.c
+
+**Compilation:**
+```bash
+gcc -g tests/fixtures/multi_source/main.c tests/fixtures/multi_source/utils.c -o tests/fixtures/multi_source/test_multi
+```
+
+**Output:**
+```
+Sum: 15
+Product: 50
+```

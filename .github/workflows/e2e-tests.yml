@@ -1,5 +1,10 @@
 name: E2E Tests
 
+# Flaky Test Detection:
+# Tests use nick-fields/retry@v3 with max_attempts: 3 and timeout_minutes: 5
+# This catches transient failures while limiting false positives
+# Tests that pass on retry are considered "flaky" and should be investigated
+
 on:
   push:
     branches: [master, main]
@@ -91,48 +96,81 @@ jobs:
           rustc -g tests/e2e/hello_world.rs -o tests/e2e/test_rs || true
 
       - name: Run C Hello World Test
-        run: ./target/release/debugger test tests/scenarios/hello_world_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/hello_world_c.yml --verbose
 
       - name: Run Rust Hello World Test
-        run: ./target/release/debugger test tests/scenarios/hello_world_rust.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/hello_world_rust.yml --verbose
 
       - name: Run Complex Verification Test
-        run: ./target/release/debugger test tests/scenarios/complex_verification.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/complex_verification.yml --verbose
 
       - name: Run Conditional Breakpoint Test
-        run: ./target/release/debugger test tests/scenarios/conditional_breakpoint_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/conditional_breakpoint_c.yml --verbose
 
       - name: Run Hit Count Breakpoint Test
-        run: ./target/release/debugger test tests/scenarios/hitcount_breakpoint_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/hitcount_breakpoint_c.yml --verbose
 
       - name: Run Breakpoint Management Test
-        run: ./target/release/debugger test tests/scenarios/breakpoint_management_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/breakpoint_management_c.yml --verbose
 
       - name: Run Stack Navigation Test
-        run: ./target/release/debugger test tests/scenarios/stack_navigation_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/stack_navigation_c.yml --verbose
 
       - name: Run Output Capture Test
-        run: ./target/release/debugger test tests/scenarios/output_capture_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/output_capture_c.yml --verbose
 
       - name: Run Program Restart Test
-        run: ./target/release/debugger test tests/scenarios/program_restart_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/program_restart_c.yml --verbose
 
       - name: Run Pause Resume Test
-        run: ./target/release/debugger test tests/scenarios/pause_resume_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/pause_resume_c.yml --verbose
 
       - name: Run Thread List Test
-        run: ./target/release/debugger test tests/scenarios/thread_list_c.yml --verbose
-        continue-on-error: true
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          command: ./target/release/debugger test tests/scenarios/thread_list_c.yml --verbose
 
       - name: Cleanup daemon
         if: always()

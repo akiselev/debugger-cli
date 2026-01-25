@@ -1,0 +1,40 @@
+# Attach Mode Test
+# Tests attaching to a running process
+
+name: "C Attach Process Test"
+description: "Verifies debugger can attach to a running process and set breakpoints"
+
+setup:
+  # Compile attach target
+  - shell: "gcc -g tests/fixtures/attach_target.c -o tests/fixtures/test_attach_c"
+  # Start target in background and capture PID to file
+  # Use timeout to ensure process terminates even if test fails
+  - shell: "timeout 30 tests/fixtures/test_attach_c > /tmp/attach_output.txt 2>&1 & echo $! > /tmp/attach_pid.txt"
+  # Wait for target to start and print PID
+  - shell: "sleep 1"
+
+target:
+  # Attach mode uses pid_file field to read PID from setup step
+  program: "tests/fixtures/test_attach_c"
+  mode: "attach"
+  pid_file: "/tmp/attach_pid.txt"
+  adapter: "lldb"
+
+steps:
+  # Set breakpoint in running process
+  - action: command
+    command: "break tests/fixtures/attach_target.c:15"
+    expect:
+      success: true
+
+  # Continue execution
+  - action: command
+    command: "continue"
+
+  # Wait for breakpoint hit
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+      file: "attach_target.c"
+      line: 15

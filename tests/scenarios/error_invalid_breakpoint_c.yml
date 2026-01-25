@@ -1,0 +1,30 @@
+# Invalid Breakpoint Error Test
+# Tests error handling for breakpoint at non-existent location
+
+name: "C Invalid Breakpoint Test"
+description: "Verifies error when setting breakpoint at invalid location"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "tests/fixtures/test_simple_c"
+  adapter: "lldb"
+  stop_on_entry: true
+
+steps:
+  # Attempt to set breakpoint at non-existent file and line
+  # expect.success: false validates command failure
+  - action: command
+    command: "break nonexistent.c:999"
+    expect:
+      success: false
+
+  # Continue to program exit
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"
