@@ -1,49 +1,51 @@
 # Pause/Resume Test (C)
 # Tests pause command to stop running program
-# Uses factorial breakpoint to ensure program runs long enough for reliable pause
+# Uses attach_target fixture which runs long enough to reliably pause
 
 name: "C Pause/Resume Test"
 description: "Verifies pause command stops a running program"
 
 setup:
-  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+  - shell: "gcc -g tests/fixtures/attach_target.c -o tests/fixtures/test_attach_target"
 
 target:
-  program: "../fixtures/test_simple_c"
+  program: "../fixtures/test_attach_target"
   args: []
   stop_on_entry: true
 
 steps:
-  # Set breakpoint in factorial to ensure we can pause during computation
+  # Set breakpoint in main loop to verify we can reach that code
   - action: command
-    command: "break factorial"
+    command: "break main"
     expect:
       success: true
 
   - action: command
     command: "continue"
 
-  # Wait for first factorial hit
+  # Wait for breakpoint in main
   - action: await
     timeout: 10
     expect:
       reason: "breakpoint"
 
-  # Remove breakpoint and continue - program will run through factorial(5)
+  # Remove all breakpoints and continue - program will start its 30-second loop
   - action: command
-    command: "breakpoint remove --all"
+    command: "breakpoint remove all"
+    expect:
+      success: true
 
   - action: command
     command: "continue"
 
-  # Immediately pause - factorial recursion should still be running
+  # Pause the running program
   - action: command
     command: "pause"
     expect:
       success: true
 
   - action: await
-    timeout: 5
+    timeout: 10
     expect:
       reason: "pause"
 
@@ -53,10 +55,8 @@ steps:
     expect:
       success: true
 
+  # Stop the debug session (don't wait for 30-second program to complete)
   - action: command
-    command: "continue"
-
-  - action: await
-    timeout: 10
+    command: "stop"
     expect:
-      reason: "exited"
+      success: true
