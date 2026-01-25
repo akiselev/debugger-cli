@@ -61,6 +61,22 @@ pub struct DebuggerInfo {
 /// All available debuggers
 static DEBUGGERS: &[DebuggerInfo] = &[
     DebuggerInfo {
+        id: "gdb",
+        name: "GDB",
+        languages: &["c", "cpp"],
+        platforms: &[Platform::Linux, Platform::MacOS, Platform::Windows],
+        description: "GDB native DAP adapter",
+        primary: true,
+    },
+    DebuggerInfo {
+        id: "cuda-gdb",
+        name: "CUDA-GDB",
+        languages: &["cuda", "c", "cpp"],
+        platforms: &[Platform::Linux],
+        description: "NVIDIA CUDA debugger with DAP support",
+        primary: true,
+    },
+    DebuggerInfo {
         id: "lldb",
         name: "lldb-dap",
         languages: &["c", "cpp", "rust", "swift"],
@@ -124,6 +140,8 @@ pub fn get_installer(id: &str) -> Option<Arc<dyn Installer>> {
     use super::adapters;
 
     match id {
+        "gdb" => Some(Arc::new(adapters::gdb::GdbInstaller)),
+        "cuda-gdb" => Some(Arc::new(adapters::cuda_gdb::CudaGdbInstaller)),
         "lldb" => Some(Arc::new(adapters::lldb::LldbInstaller)),
         "codelldb" => Some(Arc::new(adapters::codelldb::CodeLldbInstaller)),
         "python" => Some(Arc::new(adapters::debugpy::DebugpyInstaller)),

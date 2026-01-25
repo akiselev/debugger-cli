@@ -281,6 +281,50 @@ fn lldb_dap_available() -> Option<PathBuf> {
     None
 }
 
+/// Checks if GDB ≥14.1 is available for testing
+///
+/// Returns path only if version meets DAP support requirement
+fn gdb_available() -> Option<PathBuf> {
+    use debugger::setup::adapters::gdb_common::{parse_gdb_version, is_gdb_version_sufficient};
+
+    let path = which::which("gdb").ok()?;
+
+    let output = std::process::Command::new(&path)
+        .arg("--version")
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let version = parse_gdb_version(&stdout)?;
+
+        if is_gdb_version_sufficient(&version) {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+/// Checks if cuda-gdb is available for testing
+///
+/// Uses same path search as CudaGdbInstaller::find_cuda_gdb()
+fn cuda_gdb_available() -> Option<PathBuf> {
+    let default_path = PathBuf::from("/usr/local/cuda/bin/cuda-gdb");
+    if default_path.exists() {
+        return Some(default_path);
+    }
+
+    if let Ok(cuda_home) = std::env::var("CUDA_HOME") {
+        let cuda_home_path = PathBuf::from(cuda_home).join("bin/cuda-gdb");
+        if cuda_home_path.exists() {
+            return Some(cuda_home_path);
+        }
+    }
+
+    which::which("cuda-gdb").ok()
+}
+
 // ============== Tests ==============
 
 #[test]
@@ -414,6 +458,79 @@ fn test_basic_debugging_workflow_c() {
 }
 
 #[test]
+fn test_basic_debugging_workflow_c_gdb() {
+    let gdb_path = match gdb_available() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: GDB ≥14.1 not available");
+            return;
+        }
+    };
+
+    let mut ctx = TestContext::new("basic_workflow_c_gdb");
+    ctx.create_config("gdb", gdb_path.to_str().unwrap());
+
+    // Build the C fixture
+    let binary = ctx.build_c_fixture("simple").clone();
+
+    // Find breakpoint markers
+    let markers = ctx.find_breakpoint_markers(&ctx.fixtures_dir.join("simple.c"));
+    let main_start_line = markers.get("main_start").expect("Missing main_start marker");
+
+    // Cleanup any existing daemon
+    ctx.cleanup_daemon();
+
+    // Start debugging
+    let output = ctx.run_debugger_ok(&[
+        "start",
+        binary.to_str().unwrap(),
+        "--stop-on-entry",
+    ]);
+    assert!(output.contains("Started debugging") || output.contains("Stopped"));
+
+    // Set a breakpoint
+    let bp_location = format!("simple.c:{}", main_start_line);
+    let output = ctx.run_debugger_ok(&["break", &bp_location]);
+    assert!(output.contains("Breakpoint") || output.contains("breakpoint"));
+
+    // Continue execution
+    let output = ctx.run_debugger_ok(&["continue"]);
+    assert!(output.contains("Continuing") || output.contains("running"));
+
+    // Wait for breakpoint hit
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "30"]);
+    assert!(
+        output.contains("Stopped") || output.contains("breakpoint"),
+        "Expected stop at breakpoint: {}",
+        output
+    );
+
+    // Get local variables
+    let output = ctx.run_debugger_ok(&["locals"]);
+    assert!(
+        output.contains("x") || output.contains("Local"),
+        "Expected locals output: {}",
+        output
+    );
+
+    // Stop the session
+    let _ = ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+fn test_cuda_gdb_adapter_available() {
+    let cuda_gdb_path = match cuda_gdb_available() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: CUDA-GDB not available");
+            return;
+        }
+    };
+
+    assert!(cuda_gdb_path.exists(), "CUDA-GDB path should exist");
+}
+
+#[test]
 #[ignore = "requires lldb-dap"]
 fn test_stepping_c() {
     let lldb_path = match lldb_dap_available() {
@@ -444,7 +561,7 @@ fn test_stepping_c() {
 
     // Step into add()
     ctx.run_debugger_ok(&["step"]);
-    let output = ctx.run_debugger_ok(&["await", "--timeout", "10"]);
+    let _output = ctx.run_debugger_ok(&["await", "--timeout", "10"]);
 
     // Get context to verify we're in add()
     let output = ctx.run_debugger_ok(&["backtrace"]);
@@ -669,7 +786,7 @@ fn test_output_capture_c() {
     ctx.run_debugger_ok(&["start", binary.to_str().unwrap()]);
 
     // Wait for program to finish
-    let output = ctx.run_debugger(&["await", "--timeout", "30"]);
+    let _output = ctx.run_debugger(&["await", "--timeout", "30"]);
 
     // Get output
     let output = ctx.run_debugger_ok(&["output"]);

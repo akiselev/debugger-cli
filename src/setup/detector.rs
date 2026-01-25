@@ -8,6 +8,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProjectType {
     Rust,
+    Cuda,
     Go,
     Python,
     JavaScript,
@@ -25,6 +26,11 @@ pub fn detect_project_types(dir: &Path) -> Vec<ProjectType> {
     // Rust
     if dir.join("Cargo.toml").exists() {
         types.push(ProjectType::Rust);
+    }
+
+    // CUDA detection must precede C/C++ (.cu files are valid C++ but require CUDA-GDB)
+    if has_extension_in_dir(dir, "cu") {
+        types.push(ProjectType::Cuda);
     }
 
     // Go
@@ -88,6 +94,7 @@ pub fn detect_project_types(dir: &Path) -> Vec<ProjectType> {
 pub fn debuggers_for_project(project: &ProjectType) -> Vec<&'static str> {
     match project {
         ProjectType::Rust => vec!["codelldb", "lldb"],
+        ProjectType::Cuda => vec!["cuda-gdb"],
         ProjectType::Go => vec!["go"],
         ProjectType::Python => vec!["python"],
         ProjectType::JavaScript | ProjectType::TypeScript => vec![], // js-debug not yet implemented
