@@ -726,9 +726,10 @@ fn parse_command(s: &str) -> Result<Command> {
                 ));
             }
             // Handle "break add <location>" or just "break <location>"
-            // Also handle --condition "expr" flag
+            // Also handle --condition "expr" and --hit-count N flags
             let mut location_str = String::new();
             let mut condition: Option<String> = None;
+            let mut hit_count: Option<u32> = None;
             let mut i = 0;
 
             // Skip "add" subcommand if present AND there are more args
@@ -747,6 +748,12 @@ fn parse_command(s: &str) -> Result<Command> {
                         i += 1;
                     }
                     condition = Some(cond_parts.join(" ").trim_matches('"').to_string());
+                } else if args[i] == "--hit-count" && i + 1 < args.len() {
+                    i += 1;
+                    hit_count = Some(args[i].parse().map_err(|_| {
+                        Error::Config(format!("Invalid hit count: {}", args[i]))
+                    })?);
+                    i += 1;
                 } else if !args[i].starts_with("--") {
                     if !location_str.is_empty() {
                         location_str.push(' ');
@@ -762,7 +769,7 @@ fn parse_command(s: &str) -> Result<Command> {
             Ok(Command::BreakpointAdd {
                 location,
                 condition,
-                hit_count: None,
+                hit_count,
             })
         }
 
@@ -964,6 +971,37 @@ mod tests {
                 assert_eq!(expression, "x + y");
             }
             _ => panic!("Expected Evaluate command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_break_with_hit_count() {
+        let cmd = parse_command("break factorial --hit-count 3").unwrap();
+        match cmd {
+            Command::BreakpointAdd { hit_count, .. } => {
+                assert_eq!(hit_count, Some(3));
+            }
+            _ => panic!("Expected BreakpointAdd command"),
+        }
+
+        let cmd = parse_command("break main.c:10 --hit-count 5").unwrap();
+        match cmd {
+            Command::BreakpointAdd { hit_count, .. } => {
+                assert_eq!(hit_count, Some(5));
+            }
+            _ => panic!("Expected BreakpointAdd command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_break_with_condition_and_hit_count() {
+        let cmd = parse_command("break foo --condition \"x > 5\" --hit-count 2").unwrap();
+        match cmd {
+            Command::BreakpointAdd { condition, hit_count, .. } => {
+                assert_eq!(condition, Some("x > 5".to_string()));
+                assert_eq!(hit_count, Some(2));
+            }
+            _ => panic!("Expected BreakpointAdd command"),
         }
     }
 }
