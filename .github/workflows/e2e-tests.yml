@@ -9,30 +9,19 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
 
 jobs:
-  # Build the debugger CLI and create base Docker image
+  # Build the debugger CLI for each platform
   build:
-    name: Build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -54,7 +43,7 @@ jobs:
       - name: Upload debugger binary
         uses: actions/upload-artifact@v4
         with:
-          name: debugger-binary
+          name: debugger-${{ matrix.os }}
           path: target/release/debugger
           retention-days: 1
 
@@ -74,7 +63,7 @@ jobs:
       - name: Download debugger binary
         uses: actions/download-artifact@v4
         with:
-          name: debugger-binary
+          name: debugger-${{ matrix.os }}
           path: target/release/
 
       - name: Make debugger executable
@@ -108,10 +97,6 @@ jobs:
         run: ./target/release/debugger test tests/scenarios/complex_verification.yml --verbose
         continue-on-error: true
 
-      - name: Run Rust integration tests
-        run: cargo test --test integration
-        continue-on-error: true
-
       - name: Cleanup daemon
         if: always()
         run: pkill -f "debugger daemon" || true
@@ -139,7 +124,7 @@ jobs:
       - name: Download debugger binary
         uses: actions/download-artifact@v4
         with:
-          name: debugger-binary
+          name: debugger-${{ matrix.os }}
           path: target/release/
 
       - name: Make debugger executable
@@ -193,7 +178,7 @@ jobs:
       - name: Download debugger binary
         uses: actions/download-artifact@v4
         with:
-          name: debugger-binary
+          name: debugger-${{ matrix.os }}
           path: target/release/
 
       - name: Make debugger executable
@@ -238,7 +223,7 @@ jobs:
       - name: Download debugger binary
         uses: actions/download-artifact@v4
         with:
-          name: debugger-binary
+          name: debugger-${{ matrix.os }}
           path: target/release/
 
       - name: Make debugger executable
@@ -302,7 +287,7 @@ jobs:
       - name: Download debugger binary
         uses: actions/download-artifact@v4
         with:
-          name: debugger-binary
+          name: debugger-ubuntu-latest
           path: target/release/
 
       - name: Make debugger executable
@@ -429,18 +414,4 @@ jobs:
           echo "| GDB | ${{ needs.test-gdb.result }} |"
           echo "| Integration | ${{ needs.integration-tests.result }} |"
           echo ""
-
-          # Count successes
-          success=0
-          total=6
-          [ "${{ needs.test-lldb.result }}" == "success" ] && ((success++))
-          [ "${{ needs.test-delve.result }}" == "success" ] && ((success++))
-          [ "${{ needs.test-debugpy.result }}" == "success" ] && ((success++))
-          [ "${{ needs.test-js-debug.result }}" == "success" ] && ((success++))
-          [ "${{ needs.test-gdb.result }}" == "success" ] && ((success++))
-          [ "${{ needs.integration-tests.result }}" == "success" ] && ((success++))
-
-          echo "**$success/$total test suites passed**"
-
-          # Don't fail while stabilizing tests
-          exit 0
+          echo "All test suites completed."
