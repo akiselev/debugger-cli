@@ -24,7 +24,11 @@ target
 # Test binaries
 tests/e2e/test_*
 tests/fixtures/test_*
+tests/fixtures/**/test_*
 tests/fixtures/cuda_test
+
+# Plan files (temporary)
+.plan/
 
 # JS/TS stuff
 node_modules/
