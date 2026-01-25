@@ -211,7 +211,7 @@ impl Config {
         let names_to_try = adapter_fallback_names(name);
 
         // Try to find any of the names in PATH
-        for try_name in names_to_try {
+        for try_name in &names_to_try {
             if let Ok(path) = which::which(try_name) {
                 return Some(AdapterConfig {
                     path,
@@ -222,8 +222,50 @@ impl Config {
             }
         }
 
+        // For LLDB, also check known system paths (especially for macOS)
+        if matches!(name, "lldb-dap" | "lldb-vscode" | "lldb") {
+            for known_path in known_lldb_paths() {
+                if known_path.exists() {
+                    return Some(AdapterConfig {
+                        path: known_path,
+                        args: Vec::new(),
+                        transport: TransportMode::default(),
+                        spawn_style: TcpSpawnStyle::default(),
+                    });
+                }
+            }
+        }
+
         None
     }
+}
+
+/// Returns known system paths where lldb-dap might be installed.
+/// This is especially useful on macOS where the binary might not be in PATH.
+fn known_lldb_paths() -> Vec<PathBuf> {
+    vec![
+        // macOS: Xcode command line tools
+        PathBuf::from("/usr/bin/lldb-dap"),
+        PathBuf::from("/usr/bin/lldb-vscode"),
+        // macOS: Xcode internal paths
+        PathBuf::from("/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap"),
+        PathBuf::from("/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-vscode"),
+        // macOS: Homebrew LLVM (Intel)
+        PathBuf::from("/usr/local/opt/llvm/bin/lldb-dap"),
+        PathBuf::from("/usr/local/opt/llvm/bin/lldb-vscode"),
+        // macOS: Homebrew LLVM (Apple Silicon)
+        PathBuf::from("/opt/homebrew/opt/llvm/bin/lldb-dap"),
+        PathBuf::from("/opt/homebrew/opt/llvm/bin/lldb-vscode"),
+        // Linux: common locations
+        PathBuf::from("/usr/lib/llvm-19/bin/lldb-dap"),
+        PathBuf::from("/usr/lib/llvm-18/bin/lldb-dap"),
+        PathBuf::from("/usr/lib/llvm-17/bin/lldb-dap"),
+        PathBuf::from("/usr/lib/llvm-16/bin/lldb-dap"),
+        PathBuf::from("/usr/lib/llvm-19/bin/lldb-vscode"),
+        PathBuf::from("/usr/lib/llvm-18/bin/lldb-vscode"),
+        PathBuf::from("/usr/lib/llvm-17/bin/lldb-vscode"),
+        PathBuf::from("/usr/lib/llvm-16/bin/lldb-vscode"),
+    ]
 }
 
 /// Returns a list of adapter names to try, with the primary name first.
