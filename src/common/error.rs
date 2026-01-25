@@ -117,10 +117,10 @@ pub enum Error {
 
 impl Error {
     /// Create an adapter not found error with search paths
-    pub fn adapter_not_found(name: &str, paths: &[&str]) -> Self {
+    pub fn adapter_not_found<S: AsRef<str>>(name: &str, paths: &[S]) -> Self {
         Self::AdapterNotFound {
             name: name.to_string(),
-            searched: paths.join(", "),
+            searched: paths.iter().map(|s| s.as_ref()).collect::<Vec<_>>().join(", "),
         }
     }
 

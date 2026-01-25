@@ -228,14 +228,28 @@ impl Config {
 
 /// Returns a list of adapter names to try, with the primary name first.
 /// This handles cases where adapters have different names on different systems
-/// (e.g., lldb-dap vs lldb-vscode on Ubuntu).
-pub fn adapter_fallback_names(name: &str) -> Vec<&str> {
+/// (e.g., lldb-dap vs lldb-vscode on Ubuntu, versioned names like lldb-dap-18).
+pub fn adapter_fallback_names(name: &str) -> Vec<String> {
     match name {
-        // LLDB adapter: newer name is lldb-dap, older/Ubuntu name is lldb-vscode
-        "lldb-dap" => vec!["lldb-dap", "lldb-vscode"],
-        "lldb-vscode" => vec!["lldb-vscode", "lldb-dap"],
-        "lldb" => vec!["lldb-dap", "lldb-vscode"],
+        // LLDB adapter: try unversioned first, then versioned variants
+        // On Ubuntu, apt installs versioned binaries like lldb-dap-18 or lldb-vscode-18
+        // LLVM 18+ renamed lldb-vscode to lldb-dap
+        "lldb-dap" | "lldb-vscode" | "lldb" => vec![
+            "lldb-dap".to_string(),
+            "lldb-vscode".to_string(),
+            // Versioned variants (newest first) - Ubuntu apt installs these
+            "lldb-dap-19".to_string(),
+            "lldb-dap-18".to_string(),
+            "lldb-dap-17".to_string(),
+            "lldb-dap-16".to_string(),
+            "lldb-vscode-19".to_string(),
+            "lldb-vscode-18".to_string(),
+            "lldb-vscode-17".to_string(),
+            "lldb-vscode-16".to_string(),
+            "lldb-vscode-15".to_string(),
+            "lldb-vscode-14".to_string(),
+        ],
         // Other adapters just use their exact name
-        _ => vec![name],
+        _ => vec![name.to_string()],
     }
 }
