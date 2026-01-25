@@ -1,0 +1,23 @@
+# Attach Invalid PID Error Test
+# Tests error handling when attaching to non-existent PID
+
+name: "C Attach Invalid PID Test"
+description: "Verifies clear error when attaching to invalid PID"
+
+setup:
+  # Compile target but do NOT run it - no process to attach to
+  - shell: "gcc -g tests/fixtures/attach_target.c -o tests/fixtures/test_attach_c"
+
+target:
+  program: "tests/fixtures/test_attach_c"
+  mode: "attach"
+  # INT32_MAX exceeds OS PID limits on all platforms - guaranteed invalid
+  pid: 2147483647
+  adapter: "lldb"
+
+steps:
+  # This step should fail during session startup with clear error message
+  - action: command
+    command: "continue"
+    expect:
+      success: false
