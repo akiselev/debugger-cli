@@ -31,6 +31,12 @@ steps:
       - index: 0
         function: "factorial"
 
+  # Remove breakpoints to avoid hitting them again during remaining recursive calls
+  - action: command
+    command: "breakpoint remove all"
+    expect:
+      success: true
+
   - action: command
     command: "continue"
 
