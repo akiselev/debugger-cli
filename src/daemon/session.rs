@@ -132,6 +132,7 @@ impl DebugSession {
         args: Vec<String>,
         adapter_name: Option<String>,
         stop_on_entry: bool,
+        initial_breakpoints: Vec<String>,
     ) -> Result<Self> {
         let adapter_name = adapter_name.unwrap_or_else(|| config.defaults.adapter.clone());
 
@@ -199,6 +200,8 @@ impl DebugSession {
             mode: if is_go { Some("exec".to_string()) } else { None },
             // Delve uses stopAtEntry instead of stopOnEntry
             stop_at_entry: if is_go && stop_on_entry { Some(true) } else { None },
+            // GDB-based adapters (gdb, cuda-gdb) use stopAtBeginningOfMainSubprogram
+            stop_at_beginning_of_main_subprogram: if (adapter_name == "gdb" || adapter_name == "cuda-gdb") && stop_on_entry { Some(true) } else { None },
         };
 
         tracing::debug!(
@@ -226,6 +229,77 @@ impl DebugSession {
         client.wait_initialized_with_timeout(request_timeout).await?;
         tracing::debug!("Received DAP initialized event");
 
+        // Set initial breakpoints before configurationDone
+        // This is required for adapters that don't support stopOnEntry (e.g., cdt-gdb-adapter)
+        let has_initial_breakpoints = !initial_breakpoints.is_empty();
+        if has_initial_breakpoints {
+            tracing::debug!(count = initial_breakpoints.len(), "Setting initial breakpoints");
+
+            // Group breakpoints by type (source vs function)
+            let mut source_bps: std::collections::HashMap<PathBuf, Vec<dap::SourceBreakpoint>> = std::collections::HashMap::new();
+            let mut function_bps: Vec<dap::FunctionBreakpoint> = Vec::new();
+
+            for bp_str in &initial_breakpoints {
+                match BreakpointLocation::parse(bp_str) {
+                    Ok(BreakpointLocation::Line { file, line }) => {
+                        source_bps.entry(file).or_default().push(dap::SourceBreakpoint {
+                            line,
+                            column: None,
+                            condition: None,
+                            hit_condition: None,
+                            log_message: None,
+                        });
+                    }
+                    Ok(BreakpointLocation::Function { name }) => {
+                        function_bps.push(dap::FunctionBreakpoint {
+                            name,
+                            condition: None,
+                            hit_condition: None,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(breakpoint = %bp_str, error = %e, "Failed to parse initial breakpoint");
+                    }
+                }
+            }
+
+            // Set source breakpoints
+            for (file, bps) in source_bps {
+                match client.set_breakpoints(&file, bps).await {
+                    Ok(results) => {
+                        for bp in results {
+                            tracing::debug!(
+                                verified = bp.verified,
+                                line = bp.line,
+                                "Initial source breakpoint set"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(file = %file.display(), error = %e, "Failed to set initial breakpoints");
+                    }
+                }
+            }
+
+            // Set function breakpoints
+            if !function_bps.is_empty() {
+                match client.set_function_breakpoints(function_bps).await {
+                    Ok(results) => {
+                        for bp in results {
+                            tracing::debug!(
+                                verified = bp.verified,
+                                line = bp.line,
+                                "Initial function breakpoint set"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to set initial function breakpoints");
+                    }
+                }
+            }
+        }
+
         // Signal configuration done - this tells the adapter to start execution
         tracing::debug!("Sending DAP configurationDone request");
         client.configuration_done().await?;
@@ -236,6 +310,8 @@ impl DebugSession {
             .take_event_receiver()
             .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
 
+        // Initial state: Stopped if stop_on_entry requested, otherwise Running
+        // Note: If initial breakpoints are set, the program will stop when it hits them
         let initial_state = if stop_on_entry {
             SessionState::Stopped
         } else {
@@ -583,7 +659,7 @@ impl DebugSession {
         self.next_bp_id += 1;
 
         match &location {
-            BreakpointLocation::Line { file, line } => {
+            BreakpointLocation::Line { file, line: _ } => {
                 // Add to our tracking
                 let stored = StoredBreakpoint {
                     id: bp_id,
@@ -610,7 +686,7 @@ impl DebugSession {
                 let info = self.get_breakpoint_info(bp_id)?;
                 Ok(info)
             }
-            BreakpointLocation::Function { name } => {
+            BreakpointLocation::Function { name: _ } => {
                 let stored = StoredBreakpoint {
                     id: bp_id,
                     location: location.clone(),

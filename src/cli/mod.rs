@@ -27,24 +27,32 @@ pub async fn dispatch(command: Commands) -> Result<()> {
             args,
             adapter,
             stop_on_entry,
+            initial_breakpoints,
         } => {
             spawn::ensure_daemon_running().await?;
             let mut client = DaemonClient::connect().await?;
 
             let program = program.canonicalize().unwrap_or(program);
 
-            let result = client
+            let has_initial_breakpoints = !initial_breakpoints.is_empty();
+
+            let _result = client
                 .send_command(Command::Start {
                     program: program.clone(),
                     args,
                     adapter,
                     stop_on_entry,
+                    initial_breakpoints: initial_breakpoints.clone(),
                 })
                 .await?;
 
             println!("Started debugging: {}", program.display());
 
-            if stop_on_entry {
+            if has_initial_breakpoints {
+                println!("Set {} initial breakpoint(s)", initial_breakpoints.len());
+            }
+
+            if stop_on_entry || has_initial_breakpoints {
                 println!("Stopped at entry point. Use 'debugger continue' to run.");
             } else {
                 println!("Program is running. Use 'debugger await' to wait for a stop.");

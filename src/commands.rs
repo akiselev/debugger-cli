@@ -23,6 +23,11 @@ pub enum Commands {
         /// Stop at program entry point
         #[arg(long)]
         stop_on_entry: bool,
+
+        /// Set initial breakpoint(s) before program starts (file:line or function name)
+        /// Can be specified multiple times: --break main --break src/file.c:42
+        #[arg(long = "break", short = 'b')]
+        initial_breakpoints: Vec<String>,
     },
 
     /// Attach to a running process

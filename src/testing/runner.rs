@@ -129,6 +129,7 @@ pub async fn run_scenario(path: &Path, verbose: bool) -> Result<TestResult> {
             args: scenario.target.args.clone().unwrap_or_default(),
             adapter: scenario.target.adapter.clone(),
             stop_on_entry: scenario.target.stop_on_entry,
+            initial_breakpoints: Vec::new(),
         })
         .await?;
 
