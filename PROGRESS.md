@@ -2,9 +2,9 @@
 
 This document tracks the implementation status of debugger-cli.
 
-> **Current Version**: 0.1.0  
-> **Status**: Feature-complete for core debugging workflows  
-> **Last Updated**: 2026-01-20
+> **Current Version**: 0.1.1
+> **Status**: Feature-complete for core debugging workflows
+> **Last Updated**: 2026-01-25
 
 ## Implementation Status
 
@@ -12,8 +12,8 @@ This document tracks the implementation status of debugger-cli.
 
 | Feature | Description |
 |---------|-------------|
-| **Session Management** | start, attach, stop, detach, status |
-| **Breakpoints** | add, remove, list, conditional, hit-count |
+| **Session Management** | start, attach, stop, detach, status, restart |
+| **Breakpoints** | add, remove, list, conditional, hit-count, initial breakpoints |
 | **Execution Control** | continue, next, step, finish, pause, await |
 | **Inspection** | context, locals, backtrace, print, eval |
 | **Thread/Frame Navigation** | threads, thread, frame, up, down |
@@ -27,7 +27,6 @@ This document tracks the implementation status of debugger-cli.
 
 | Feature | Description | Notes |
 |---------|-------------|-------|
-| `restart` command | Restart program with same args | Stub implemented |
 | Breakpoint enable/disable | Toggle breakpoints | Commands defined |
 
 ### 📋 Planned
@@ -46,10 +45,12 @@ This document tracks the implementation status of debugger-cli.
 | Command | Aliases | Status | Description |
 |---------|---------|--------|-------------|
 | `start <program>` | | ✅ | Start debugging a program |
+| `start --break <loc>` | `-b` | ✅ | Set initial breakpoints before start |
 | `attach <pid>` | | ✅ | Attach to running process |
 | `stop` | | ✅ | Stop debug session |
 | `detach` | | ✅ | Detach (keep process running) |
 | `status` | | ✅ | Show daemon/session status |
+| `restart` | | ✅ | Restart program with same args |
 | `breakpoint add` | `break`, `b` | ✅ | Add breakpoint |
 | `breakpoint remove` | | ✅ | Remove breakpoint |
 | `breakpoint list` | | ✅ | List all breakpoints |
@@ -70,7 +71,6 @@ This document tracks the implementation status of debugger-cli.
 | `up` | | ✅ | Move up stack |
 | `down` | | ✅ | Move down stack |
 | `output` | | ✅ | Get program output |
-| `restart` | | 🚧 | Restart program |
 | `setup` | | ✅ | Install debug adapters |
 | `test` | | ✅ | Run YAML test scenarios |
 | `logs` | | ✅ | View daemon logs |
@@ -83,6 +83,8 @@ This document tracks the implementation status of debugger-cli.
 | CodeLLDB | C, C++, Rust | GitHub releases | ✅ Full |
 | debugpy | Python | pip install | ✅ Full |
 | Delve | Go | go install / releases | ✅ Full |
+| GDB | C, C++ | System package (14.1+) | ✅ Full |
+| CUDA-GDB | CUDA, C, C++ | NVIDIA CUDA Toolkit | ✅ Full (Linux) |
 | cpptools | C, C++ | VS Code extension | 📋 Planned |
 | js-debug | JavaScript, TypeScript | VS Code extension | 📋 Planned |
 
@@ -120,4 +122,27 @@ gcc -g -o /tmp/test /tmp/test.c
 ./target/release/debugger await
 ./target/release/debugger context
 ./target/release/debugger stop
+```
+
+## Go Test (requires Delve)
+
+```bash
+# Create test program
+mkdir -p /tmp/gotest && cd /tmp/gotest
+cat > main.go << 'EOF'
+package main
+import "fmt"
+func main() {
+    x := 42
+    fmt.Println("x =", x)
+}
+EOF
+go mod init gotest && go build -gcflags="all=-N -l" -o gotest
+
+# Debug it
+debugger start ./gotest --adapter go --break main.main
+debugger continue
+debugger await
+debugger locals
+debugger stop
 ```
