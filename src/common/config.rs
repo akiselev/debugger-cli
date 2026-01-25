@@ -44,12 +44,13 @@ pub enum TransportMode {
 
 /// TCP adapter spawn style
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
-#[serde(rename_all = "lowercase")]
 pub enum TcpSpawnStyle {
     /// Adapter accepts --listen flag and waits for connection (Delve)
     #[default]
+    #[serde(rename = "tcp-listen")]
     TcpListen,
     /// Adapter receives port as positional argument (js-debug)
+    #[serde(rename = "tcp-port-arg")]
     TcpPortArg,
 }
 

@@ -253,24 +253,37 @@ impl DapClient {
                     ))
                 })?;
 
-                // js-debug silent startup: 500ms buffer for adapter to begin listening.
-                // Known risk: slow systems may need longer. Future: retry connect with backoff.
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
                 (adapter, addr)
             }
         };
 
         tracing::info!("Connecting to DAP adapter at {}", addr);
 
-        let stream = match TcpStream::connect(&addr).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = adapter.start_kill();
-                return Err(Error::AdapterStartFailed(format!(
-                    "Failed to connect to adapter at {}: {}",
-                    addr, e
-                )));
+        // Retry TCP connection with exponential backoff
+        // Handles adapters that need time to start listening (e.g., js-debug)
+        let stream = {
+            let mut last_error = None;
+            let mut delay = Duration::from_millis(100);
+            let max_delay = Duration::from_millis(1000);
+            let timeout_duration = Duration::from_secs(10);
+            let start = std::time::Instant::now();
+
+            loop {
+                match TcpStream::connect(&addr).await {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        last_error = Some(e);
+                        if start.elapsed() >= timeout_duration {
+                            let _ = adapter.start_kill();
+                            return Err(Error::AdapterStartFailed(format!(
+                                "Failed to connect to adapter at {} after {:?}: {}",
+                                addr, timeout_duration, last_error.unwrap()
+                            )));
+                        }
+                        tokio::time::sleep(delay).await;
+                        delay = std::cmp::min(delay * 2, max_delay);
+                    }
+                }
             }
         };
 

@@ -919,8 +919,8 @@ fn test_basic_debugging_workflow_js() {
     ctx.create_config_with_tcp(
         "js-debug",
         node_path.to_str().unwrap(),
-        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
-        "port_argument",
+        &[js_debug_path.to_str().unwrap()],
+        "tcp-port-arg",
     );
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1002,8 +1002,8 @@ fn test_basic_debugging_workflow_ts() {
     ctx.create_config_with_tcp(
         "js-debug",
         node_path.to_str().unwrap(),
-        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
-        "port_argument",
+        &[js_debug_path.to_str().unwrap()],
+        "tcp-port-arg",
     );
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1077,8 +1077,8 @@ fn test_stepping_js() {
     ctx.create_config_with_tcp(
         "js-debug",
         node_path.to_str().unwrap(),
-        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
-        "port_argument",
+        &[js_debug_path.to_str().unwrap()],
+        "tcp-port-arg",
     );
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -1142,8 +1142,8 @@ fn test_expression_evaluation_js() {
     ctx.create_config_with_tcp(
         "js-debug",
         node_path.to_str().unwrap(),
-        &[js_debug_path.to_str().unwrap(), "--port={{port}}"],
-        "port_argument",
+        &[js_debug_path.to_str().unwrap()],
+        "tcp-port-arg",
     );
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

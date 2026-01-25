@@ -176,14 +176,16 @@ impl DebugSession {
             .map(|p| p.to_string_lossy().into_owned());
 
         // Build launch arguments - adapter-specific fields
-        let is_python = adapter_name == "debugpy"
-            || program.extension().map(|e| e == "py").unwrap_or(false);
+        // Only set adapter-specific fields when actually using that adapter
+        let is_python = adapter_name == "debugpy";
         let is_go = adapter_name == "go"
             || adapter_name == "delve"
             || adapter_name == "dlv";
-        let is_javascript = adapter_name == "js-debug"
-            || program.extension().map(|e| e == "js").unwrap_or(false);
-        let is_typescript = program.extension().map(|e| e == "ts").unwrap_or(false);
+        let is_js_debug = adapter_name == "js-debug";
+        // Enable source maps for js-debug when debugging TS files or compiled JS with sibling .ts
+        let is_typescript_source = program.extension().map(|e| e == "ts").unwrap_or(false)
+            || (program.extension().map(|e| e == "js").unwrap_or(false)
+                && program.with_extension("ts").exists());
 
         let launch_args = LaunchArguments {
             program: program.to_string_lossy().into_owned(),
@@ -205,9 +207,9 @@ impl DebugSession {
             stop_at_entry: if is_go && stop_on_entry { Some(true) } else { None },
             // GDB-based adapters (gdb, cuda-gdb) use stopAtBeginningOfMainSubprogram
             stop_at_beginning_of_main_subprogram: if (adapter_name == "gdb" || adapter_name == "cuda-gdb") && stop_on_entry { Some(true) } else { None },
-            // js-debug specific
-            type_attr: if is_javascript || is_typescript { Some("pwa-node".to_string()) } else { None },
-            source_maps: if is_typescript { Some(true) } else { None },
+            // js-debug specific - type selects the debugger (pwa-node for Node.js)
+            type_attr: if is_js_debug { Some("pwa-node".to_string()) } else { None },
+            source_maps: if is_js_debug && is_typescript_source { Some(true) } else { None },
             out_files: None,
             runtime_executable: None,
             runtime_args: None,

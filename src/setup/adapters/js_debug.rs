@@ -53,7 +53,7 @@ impl Installer for JsDebugInstaller {
 
         Ok(InstallMethod::LanguagePackage {
             tool: "npm".to_string(),
-            package: "js-debug".to_string(),
+            package: "@vscode/js-debug".to_string(),
         })
     }
 
@@ -77,7 +77,12 @@ impl Installer for JsDebugInstaller {
 
         match status {
             InstallStatus::Installed { path, .. } => {
-                verify_dap_adapter_tcp(&path, &["--port={{port}}".to_string()], crate::common::config::TcpSpawnStyle::TcpPortArg).await
+                // js-debug's dapDebugServer.js must be run via node
+                let node_path = which::which("node").map_err(|_| {
+                    Error::Internal("node not found in PATH".to_string())
+                })?;
+                // TcpPortArg appends port as positional argument, no extra args needed
+                verify_dap_adapter_tcp(&node_path, &[path.to_string_lossy().to_string()], crate::common::config::TcpSpawnStyle::TcpPortArg).await
             }
             InstallStatus::Broken { reason, .. } => Ok(VerifyResult {
                 success: false,
@@ -94,15 +99,16 @@ impl Installer for JsDebugInstaller {
 }
 
 fn get_dap_executable(adapter_dir: &PathBuf) -> PathBuf {
-    let js_path = adapter_dir.join("node_modules/js-debug/src/dapDebugServer.js");
+    // @vscode/js-debug installs to node_modules/@vscode/js-debug
+    let js_path = adapter_dir.join("node_modules/@vscode/js-debug/src/dapDebugServer.js");
     if js_path.exists() {
         return js_path;
     }
-    adapter_dir.join("node_modules/js-debug/dist/src/dapDebugServer.js")
+    adapter_dir.join("node_modules/@vscode/js-debug/dist/src/dapDebugServer.js")
 }
 
 fn read_package_version(adapter_dir: &PathBuf) -> Option<String> {
-    let package_json = adapter_dir.join("node_modules/js-debug/package.json");
+    let package_json = adapter_dir.join("node_modules/@vscode/js-debug/package.json");
     if !package_json.exists() {
         return None;
     }
@@ -120,6 +126,9 @@ async fn install_js_debug(opts: &InstallOptions) -> Result<InstallResult> {
     let npm_path = which::which("npm").map_err(|_| {
         Error::Internal("npm not found in PATH".to_string())
     })?;
+    let node_path = which::which("node").map_err(|_| {
+        Error::Internal("node not found in PATH".to_string())
+    })?;
     println!("Using npm: {}", npm_path.display());
 
     let adapter_dir = ensure_adapters_dir()?.join("js-debug");
@@ -131,9 +140,9 @@ async fn install_js_debug(opts: &InstallOptions) -> Result<InstallResult> {
     std::fs::create_dir_all(&adapter_dir)?;
 
     let package = if let Some(version) = &opts.version {
-        format!("js-debug@{}", version)
+        format!("@vscode/js-debug@{}", version)
     } else {
-        "js-debug".to_string()
+        "@vscode/js-debug".to_string()
     };
 
     println!("Installing {}...", package);
@@ -145,7 +154,7 @@ async fn install_js_debug(opts: &InstallOptions) -> Result<InstallResult> {
     let dap_path = get_dap_executable(&adapter_dir);
     if !dap_path.exists() {
         return Err(Error::Internal(
-            "js-debug installation succeeded but dapDebugServer.js not found".to_string(),
+            "@vscode/js-debug installation succeeded but dapDebugServer.js not found".to_string(),
         ));
     }
 
@@ -155,12 +164,13 @@ async fn install_js_debug(opts: &InstallOptions) -> Result<InstallResult> {
         write_version_file(&adapter_dir, v)?;
     }
 
-    println!("Setting permissions... done");
-    println!("Verifying installation...");
+    println!("js-debug installation completed.");
 
+    // Return node as the executable with the JS file as an argument
+    // TcpPortArg will append the port as a positional argument
     Ok(InstallResult {
-        path: dap_path,
+        path: node_path,
         version,
-        args: vec!["--port={{port}}".to_string()],
+        args: vec![dap_path.to_string_lossy().to_string()],
     })
 }

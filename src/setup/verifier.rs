@@ -158,21 +158,35 @@ pub async fn verify_dap_adapter_tcp(
                 Error::Internal(format!("Failed to spawn adapter: {}", e))
             })?;
 
-            tokio::time::sleep(Duration::from_millis(500)).await;
-
             (child, addr)
         }
     };
 
-    let stream = match TcpStream::connect(&addr).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = child.kill().await;
-            return Ok(VerifyResult {
-                success: false,
-                capabilities: None,
-                error: Some(format!("Failed to connect to {}: {}", addr, e)),
-            });
+    // Retry TCP connection with exponential backoff
+    let stream = {
+        let mut last_error = String::new();
+        let mut delay = Duration::from_millis(100);
+        let max_delay = Duration::from_millis(1000);
+        let timeout_duration = Duration::from_secs(10);
+        let start = std::time::Instant::now();
+
+        loop {
+            match TcpStream::connect(&addr).await {
+                Ok(s) => break s,
+                Err(e) => {
+                    last_error = e.to_string();
+                    if start.elapsed() >= timeout_duration {
+                        let _ = child.kill().await;
+                        return Ok(VerifyResult {
+                            success: false,
+                            capabilities: None,
+                            error: Some(format!("Failed to connect to {} after {:?}: {}", addr, timeout_duration, last_error)),
+                        });
+                    }
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, max_delay);
+                }
+            }
         }
     };
 

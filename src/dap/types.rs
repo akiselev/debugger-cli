@@ -160,7 +160,7 @@ pub struct LaunchArguments {
     pub stop_at_beginning_of_main_subprogram: Option<bool>,
 
     // === js-debug (JavaScript/TypeScript) specific ===
-    /// Request type: "launch" or "attach" (required by js-debug for launch)
+    /// Debugger type for js-debug (e.g., "pwa-node" for Node.js, "pwa-chrome" for Chrome)
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub type_attr: Option<String>,
     /// Enable source maps for TypeScript debugging
