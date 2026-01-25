@@ -34,11 +34,22 @@ pub struct TargetConfig {
     pub program: PathBuf,
     /// Arguments to pass to the program
     pub args: Option<Vec<String>>,
+    /// Debug mode: "launch" (default) or "attach"
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// PID to attach to (for attach mode)
+    pub pid: Option<u32>,
+    /// Path to file containing PID (for attach mode with setup-generated PIDs)
+    pub pid_file: Option<PathBuf>,
     /// Debug adapter to use (e.g., "lldb-dap", "codelldb", "debugpy")
     pub adapter: Option<String>,
     /// Whether to stop at the program entry point
     #[serde(default)]
     pub stop_on_entry: bool,
+}
+
+fn default_mode() -> String {
+    "launch".to_string()
 }
 
 /// A single test step in the execution flow
@@ -139,6 +150,9 @@ pub struct FrameAssertion {
 /// Expectations for an evaluate result
 #[derive(Deserialize, Debug)]
 pub struct EvaluateExpectation {
+    /// Whether the evaluation should succeed (default: true)
+    /// Set to false to test error scenarios (undefined variables, syntax errors)
+    pub success: Option<bool>,
     /// Expected result value
     pub result: Option<String>,
     /// Expected result substring

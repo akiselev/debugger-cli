@@ -1,0 +1,50 @@
+# Conditional Breakpoint Test (C)
+# Tests conditional breakpoint functionality
+
+name: "C Conditional Breakpoint Test"
+description: "Verifies conditional breakpoints stop only when condition is true"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "../fixtures/test_simple_c"
+  args: []
+  stop_on_entry: true
+
+steps:
+  # Set conditional breakpoint: only stop when n == 3
+  # factorial(5) calls recursively: n=5,4,3,2,1
+  # Should only stop once when n=3
+  - action: command
+    command: "break factorial --condition \"n == 3\""
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  # Verify we stopped at n=3 (not n=5 or n=4)
+  - action: inspect_locals
+    asserts:
+      - name: "n"
+        value_contains: "3"
+
+  # Remove breakpoint and continue to exit
+  - action: command
+    command: "breakpoint remove all"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

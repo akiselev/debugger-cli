@@ -97,7 +97,7 @@ pub fn debuggers_for_project(project: &ProjectType) -> Vec<&'static str> {
         ProjectType::Cuda => vec!["cuda-gdb"],
         ProjectType::Go => vec!["go"],
         ProjectType::Python => vec!["python"],
-        ProjectType::JavaScript | ProjectType::TypeScript => vec![], // js-debug not yet implemented
+        ProjectType::JavaScript | ProjectType::TypeScript => vec!["js-debug"],
         ProjectType::C | ProjectType::Cpp => vec!["lldb", "codelldb"],
         ProjectType::CSharp => vec![], // netcoredbg not yet implemented
         ProjectType::Java => vec![],   // java-debug not yet implemented

@@ -1,0 +1,38 @@
+# Conditional Breakpoint Test (Python)
+# Tests conditional breakpoint functionality
+
+name: "Python Conditional Breakpoint Test"
+description: "Verifies conditional breakpoints stop only when condition is true"
+
+target:
+  program: "tests/fixtures/simple.py"
+  args: []
+  adapter: "python"
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break factorial --condition \"n > 3\""
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: inspect_locals
+    asserts:
+      - name: "n"
+        value_contains: "4"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

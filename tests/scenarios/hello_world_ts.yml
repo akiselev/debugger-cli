@@ -1,0 +1,71 @@
+# TypeScript Hello World Test
+# Tests TypeScript debugging with js-debug and sourcemaps
+
+name: "TypeScript Hello World Test"
+description: "Verifies TypeScript debugging with sourcemap support"
+
+# Setup: Compile TypeScript to JavaScript with sourcemaps
+setup:
+  - shell: "cd tests/e2e && npx tsc --outDir dist --sourceMap hello_world.ts || true"
+
+# Debug target configuration
+# Note: We debug the compiled JS but set breakpoints in TS source
+target:
+  program: "tests/e2e/dist/hello_world.js"
+  args: []
+  adapter: "js-debug"
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set a breakpoint in the TypeScript source file
+  - action: command
+    command: "break hello_world.ts:5"
+    expect:
+      success: true
+
+  # 2. Continue to the breakpoint
+  - action: command
+    command: "continue"
+
+  # 3. Wait for stop at breakpoint (should map to TS source)
+  - action: await
+    timeout: 15
+    expect:
+      reason: "breakpoint"
+      # With sourcemaps, we should see the TS file
+      file: "hello_world.ts"
+
+  # 4. Check local variables
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        value_contains: "10"
+
+  # 5. Step over
+  - action: command
+    command: "next"
+
+  # 6. Wait for step
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 7. Verify variables after stepping
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        value_contains: "10"
+      - name: "y"
+        value_contains: "20"
+
+  # 8. Continue to exit
+  - action: command
+    command: "continue"
+
+  # 9. Wait for program exit
+  - action: await
+    timeout: 10
+    expect:
+      reason: "terminated"

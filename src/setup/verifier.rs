@@ -2,6 +2,7 @@
 //!
 //! Verifies that installed debuggers work correctly by sending DAP messages.
 
+use crate::common::config::TcpSpawnStyle;
 use crate::common::{parse_listen_address, Error, Result};
 use std::path::Path;
 use std::process::Stdio;
@@ -63,91 +64,134 @@ pub async fn verify_dap_adapter(
     }
 }
 
-/// Verify a TCP-based DAP adapter (like Delve) by spawning it with --listen
-/// and connecting via TCP to send the initialize request
+/// Verify a TCP-based DAP adapter by spawning it and connecting via TCP
 pub async fn verify_dap_adapter_tcp(
     path: &Path,
     args: &[String],
+    spawn_style: TcpSpawnStyle,
 ) -> Result<VerifyResult> {
-    // Spawn the adapter with --listen=127.0.0.1:0
-    let mut cmd = Command::new(path);
-    cmd.args(args)
-        .arg("--listen=127.0.0.1:0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let (mut child, addr) = match spawn_style {
+        TcpSpawnStyle::TcpListen => {
+            let mut cmd = Command::new(path);
+            cmd.args(args)
+                .arg("--listen=127.0.0.1:0")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
-        Error::Internal(format!("Failed to spawn adapter: {}", e))
-    })?;
-
-    // Read stdout to find the listening address
-    let stdout = child.stdout.take().ok_or_else(|| {
-        Error::Internal("Failed to get adapter stdout".to_string())
-    })?;
-
-    let mut stdout_reader = BufReader::new(stdout);
-    let mut line = String::new();
-
-    // Wait for the "listening at" message with timeout
-    let listen_result = timeout(Duration::from_secs(10), async {
-        loop {
-            line.clear();
-            let bytes_read = stdout_reader.read_line(&mut line).await.map_err(|e| {
-                Error::Internal(format!("Failed to read adapter output: {}", e))
+            let mut child = cmd.spawn().map_err(|e| {
+                Error::Internal(format!("Failed to spawn adapter: {}", e))
             })?;
 
-            if bytes_read == 0 {
-                return Err(Error::Internal(
-                    "Adapter exited before outputting listen address".to_string(),
-                ));
-            }
+            let stdout = child.stdout.take().ok_or_else(|| {
+                Error::Internal("Failed to get adapter stdout".to_string())
+            })?;
 
-            // Look for the listening address in the output
-            if let Some(addr) = parse_listen_address(&line) {
-                return Ok(addr);
-            }
-        }
-    })
-    .await;
+            let mut stdout_reader = BufReader::new(stdout);
+            let mut line = String::new();
 
-    let addr = match listen_result {
-        Ok(Ok(addr)) => addr,
-        Ok(Err(e)) => {
-            let _ = child.kill().await;
-            return Ok(VerifyResult {
-                success: false,
-                capabilities: None,
-                error: Some(e.to_string()),
-            });
+            let listen_result = timeout(Duration::from_secs(10), async {
+                loop {
+                    line.clear();
+                    let bytes_read = stdout_reader.read_line(&mut line).await.map_err(|e| {
+                        Error::Internal(format!("Failed to read adapter output: {}", e))
+                    })?;
+
+                    if bytes_read == 0 {
+                        return Err(Error::Internal(
+                            "Adapter exited before outputting listen address".to_string(),
+                        ));
+                    }
+
+                    if let Some(addr) = parse_listen_address(&line) {
+                        return Ok(addr);
+                    }
+                }
+            })
+            .await;
+
+            let addr = match listen_result {
+                Ok(Ok(addr)) => addr,
+                Ok(Err(e)) => {
+                    let _ = child.kill().await;
+                    return Ok(VerifyResult {
+                        success: false,
+                        capabilities: None,
+                        error: Some(e.to_string()),
+                    });
+                }
+                Err(_) => {
+                    let _ = child.kill().await;
+                    return Ok(VerifyResult {
+                        success: false,
+                        capabilities: None,
+                        error: Some("Timeout waiting for adapter to start listening".to_string()),
+                    });
+                }
+            };
+
+            (child, addr)
         }
-        Err(_) => {
-            let _ = child.kill().await;
-            return Ok(VerifyResult {
-                success: false,
-                capabilities: None,
-                error: Some("Timeout waiting for adapter to start listening".to_string()),
-            });
+        TcpSpawnStyle::TcpPortArg => {
+            use std::net::TcpListener as StdTcpListener;
+
+            let listener = StdTcpListener::bind("127.0.0.1:0").map_err(|e| {
+                Error::Internal(format!("Failed to allocate port: {}", e))
+            })?;
+            let port = listener.local_addr().map_err(|e| {
+                Error::Internal(format!("Failed to get port: {}", e))
+            })?.port();
+            drop(listener);
+
+            let addr = format!("127.0.0.1:{}", port);
+
+            let mut cmd = Command::new(path);
+            let mut full_args = args.to_vec();
+            full_args.push(port.to_string());
+
+            cmd.args(&full_args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let child = cmd.spawn().map_err(|e| {
+                Error::Internal(format!("Failed to spawn adapter: {}", e))
+            })?;
+
+            (child, addr)
         }
     };
 
-    // Connect to the TCP port
-    let stream = match TcpStream::connect(&addr).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = child.kill().await;
-            return Ok(VerifyResult {
-                success: false,
-                capabilities: None,
-                error: Some(format!("Failed to connect to {}: {}", addr, e)),
-            });
+    // Retry TCP connection with exponential backoff
+    let stream = {
+        let mut last_error = String::new();
+        let mut delay = Duration::from_millis(100);
+        let max_delay = Duration::from_millis(1000);
+        let timeout_duration = Duration::from_secs(10);
+        let start = std::time::Instant::now();
+
+        loop {
+            match TcpStream::connect(&addr).await {
+                Ok(s) => break s,
+                Err(e) => {
+                    last_error = e.to_string();
+                    if start.elapsed() >= timeout_duration {
+                        let _ = child.kill().await;
+                        return Ok(VerifyResult {
+                            success: false,
+                            capabilities: None,
+                            error: Some(format!("Failed to connect to {} after {:?}: {}", addr, timeout_duration, last_error)),
+                        });
+                    }
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, max_delay);
+                }
+            }
         }
     };
 
-    // Send initialize request and wait for response
     let init_result = timeout(Duration::from_secs(5), send_initialize_tcp(stream)).await;
 
-    // Cleanup
     let _ = child.kill().await;
 
     match init_result {

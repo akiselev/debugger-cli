@@ -8,4 +8,5 @@ pub mod debugpy;
 pub mod delve;
 pub mod gdb_common;
 pub mod gdb;
+pub mod js_debug;
 pub mod lldb;

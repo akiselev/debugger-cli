@@ -1,0 +1,45 @@
+# Undefined Variable Error Test
+# Tests error handling when evaluating undefined variable
+
+name: "C Undefined Variable Test"
+description: "Verifies error when evaluating undefined variable"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "tests/fixtures/test_simple_c"
+  adapter: "lldb"
+  stop_on_entry: true
+
+steps:
+  # Set breakpoint at main start
+  - action: command
+    command: "break simple.c:19"
+    expect:
+      success: true
+
+  # Continue to breakpoint
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  # Attempt to evaluate undefined variable
+  # expect.success: false allows the evaluation to fail gracefully
+  - action: evaluate
+    expression: "undefined_xyz"
+    expect:
+      success: false
+      result_contains: "error"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

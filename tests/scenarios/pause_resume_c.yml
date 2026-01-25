@@ -1,0 +1,62 @@
+# Pause/Resume Test (C)
+# Tests pause command to stop running program
+# Uses factorial breakpoint to ensure program runs long enough for reliable pause
+
+name: "C Pause/Resume Test"
+description: "Verifies pause command stops a running program"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "tests/fixtures/test_simple_c"
+  args: []
+  stop_on_entry: true
+
+steps:
+  # Set breakpoint in factorial to ensure we can pause during computation
+  - action: command
+    command: "break factorial"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  # Wait for first factorial hit
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  # Remove breakpoint and continue - program will run through factorial(5)
+  - action: command
+    command: "breakpoint remove --all"
+
+  - action: command
+    command: "continue"
+
+  # Immediately pause - factorial recursion should still be running
+  - action: command
+    command: "pause"
+    expect:
+      success: true
+
+  - action: await
+    timeout: 5
+    expect:
+      reason: "pause"
+
+  # Verify we're stopped somewhere in the program
+  - action: command
+    command: "backtrace"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

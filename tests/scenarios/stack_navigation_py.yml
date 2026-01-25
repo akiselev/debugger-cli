@@ -1,0 +1,74 @@
+# Stack Navigation Test (Python)
+# Tests frame navigation commands (frame, up, down)
+
+name: "Python Stack Navigation Test"
+description: "Verifies stack frame navigation works correctly"
+
+target:
+  program: "tests/fixtures/simple.py"
+  args: []
+  adapter: "python"
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break factorial"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "backtrace"
+    expect:
+      output_contains: "factorial"
+
+  - action: command
+    command: "frame 1"
+    expect:
+      success: true
+
+  - action: inspect_locals
+    asserts:
+      - name: "n"
+        value_contains: "4"
+
+  - action: command
+    command: "up"
+    expect:
+      success: true
+
+  - action: command
+    command: "down"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

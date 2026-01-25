@@ -158,6 +158,26 @@ pub struct LaunchArguments {
     /// Stop at beginning of main (GDB uses stopAtBeginningOfMainSubprogram instead of stopOnEntry)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_at_beginning_of_main_subprogram: Option<bool>,
+
+    // === js-debug (JavaScript/TypeScript) specific ===
+    /// Debugger type for js-debug (e.g., "pwa-node" for Node.js, "pwa-chrome" for Chrome)
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub type_attr: Option<String>,
+    /// Enable source maps for TypeScript debugging
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_maps: Option<bool>,
+    /// Glob patterns for output files (compiled JavaScript)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub out_files: Option<Vec<String>>,
+    /// Node.js runtime executable path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_executable: Option<String>,
+    /// Additional runtime arguments
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_args: Option<Vec<String>>,
+    /// Patterns for files to skip during debugging
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_files: Option<Vec<String>>,
 }
 
 /// Attach request arguments

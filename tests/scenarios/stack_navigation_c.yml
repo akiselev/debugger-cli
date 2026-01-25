@@ -1,0 +1,83 @@
+# Stack Navigation Test (C)
+# Tests frame navigation commands (frame, up, down)
+
+name: "C Stack Navigation Test"
+description: "Verifies stack frame navigation works correctly"
+
+setup:
+  - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
+
+target:
+  program: "../fixtures/test_simple_c"
+  args: []
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "break factorial"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "breakpoint"
+
+  - action: command
+    command: "backtrace"
+    expect:
+      output_contains: "factorial"
+
+  - action: command
+    command: "frame 1"
+    expect:
+      success: true
+
+  - action: inspect_locals
+    asserts:
+      - name: "n"
+        value_contains: "4"
+
+  - action: command
+    command: "up"
+    expect:
+      success: true
+
+  - action: command
+    command: "down"
+    expect:
+      success: true
+
+  # Delete the breakpoint before continuing to avoid hitting it more times
+  # (factorial is recursive and will hit the breakpoint 5 times total)
+  - action: command
+    command: "breakpoint remove all"
+    expect:
+      success: true
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "exited"

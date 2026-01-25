@@ -42,6 +42,18 @@ pub enum TransportMode {
     Tcp,
 }
 
+/// TCP adapter spawn style
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+pub enum TcpSpawnStyle {
+    /// Adapter accepts --listen flag and waits for connection (Delve)
+    #[default]
+    #[serde(rename = "tcp-listen")]
+    TcpListen,
+    /// Adapter receives port as positional argument (js-debug)
+    #[serde(rename = "tcp-port-arg")]
+    TcpPortArg,
+}
+
 /// Configuration for a debug adapter
 #[derive(Debug, Deserialize, Clone)]
 pub struct AdapterConfig {
@@ -55,6 +67,10 @@ pub struct AdapterConfig {
     /// Transport mode for DAP communication
     #[serde(default)]
     pub transport: TransportMode,
+
+    /// TCP spawn style (only used when transport is Tcp)
+    #[serde(default)]
+    pub spawn_style: TcpSpawnStyle,
 }
 
 /// Default settings
@@ -195,6 +211,7 @@ impl Config {
             path,
             args: Vec::new(),
             transport: TransportMode::default(),
+            spawn_style: TcpSpawnStyle::default(),
         })
     }
 }

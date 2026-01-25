@@ -113,37 +113,107 @@ pub async fn run_scenario(path: &Path, verbose: bool) -> Result<TestResult> {
         scenario.target.program.clone()
     };
 
-    let program_path = program_path.canonicalize().map_err(|e| {
-        Error::Config(format!(
-            "Program not found '{}': {}",
-            scenario.target.program.display(),
-            e
-        ))
-    })?;
+    // Handle launch vs attach mode
+    if scenario.target.mode == "attach" {
+        // Attach mode: get PID from scenario or pid_file
+        let pid = if let Some(pid) = scenario.target.pid {
+            pid
+        } else if let Some(pid_file_path) = &scenario.target.pid_file {
+            let pid_file = if pid_file_path.is_relative() {
+                scenario_dir.join(pid_file_path)
+            } else {
+                pid_file_path.clone()
+            };
 
-    // Start the debug session
-    println!("\n{}", "Starting debug session...".cyan());
-    client
-        .send_command(Command::Start {
-            program: program_path.clone(),
-            args: scenario.target.args.clone().unwrap_or_default(),
-            adapter: scenario.target.adapter.clone(),
-            stop_on_entry: scenario.target.stop_on_entry,
-            initial_breakpoints: Vec::new(),
-        })
-        .await?;
+            let pid_str = std::fs::read_to_string(&pid_file).map_err(|e| {
+                Error::Config(format!(
+                    "Failed to read PID file '{}': {}",
+                    pid_file.display(),
+                    e
+                ))
+            })?;
 
-    if verbose {
-        println!(
-            "  Program: {}",
-            program_path.display().to_string().dimmed()
-        );
-        if let Some(adapter) = &scenario.target.adapter {
-            println!("  Adapter: {}", adapter.dimmed());
+            pid_str.trim().parse::<u32>().map_err(|e| {
+                Error::Config(format!(
+                    "Invalid PID in file '{}': {}",
+                    pid_file.display(),
+                    e
+                ))
+            })?
+        } else {
+            return Err(Error::Config(
+                "Attach mode requires either 'pid' or 'pid_file' field".to_string(),
+            ));
+        };
+
+        // Validate process exists before attempting attach (signal 0 checks existence)
+        #[cfg(unix)]
+        {
+            // Signal 0 tests process existence without side effects
+            let result = unsafe { libc::kill(pid as i32, 0) };
+            if result != 0 {
+                return Err(Error::Config(format!(
+                    "Process with PID {} not found or not accessible",
+                    pid
+                )));
+            }
         }
-    }
 
-    println!("  {} Session started", "✓".green());
+        println!("\n{}", "Attaching to process...".cyan());
+        client
+            .send_command(Command::Attach {
+                pid,
+                adapter: scenario.target.adapter.clone(),
+            })
+            .await?;
+
+        if verbose {
+            println!("  PID: {}", pid.to_string().dimmed());
+            if let Some(adapter) = &scenario.target.adapter {
+                println!("  Adapter: {}", adapter.dimmed());
+            }
+        }
+
+        println!("  {} Attached to process", "✓".green());
+    } else if scenario.target.mode != "launch" && scenario.target.mode != "launch" {
+        // Unknown mode - fail explicitly
+        return Err(Error::Config(format!(
+            "Unknown target mode '{}'. Supported modes: 'launch', 'attach'",
+            scenario.target.mode
+        )));
+    } else {
+        // Launch mode (default)
+        let program_path = program_path.canonicalize().map_err(|e| {
+            Error::Config(format!(
+                "Program not found '{}': {}",
+                scenario.target.program.display(),
+                e
+            ))
+        })?;
+
+        println!("\n{}", "Starting debug session...".cyan());
+        client
+            .send_command(Command::Start {
+                program: program_path.clone(),
+                args: scenario.target.args.clone().unwrap_or_default(),
+                adapter: scenario.target.adapter.clone(),
+                stop_on_entry: scenario.target.stop_on_entry,
+                initial_breakpoints: Vec::new(),
+            })
+            .await?;
+
+        if verbose {
+            println!(
+                "  Program: {}",
+                program_path.display().to_string().dimmed()
+            );
+            if let Some(adapter) = &scenario.target.adapter {
+                println!("  Adapter: {}", adapter.dimmed());
+            }
+        }
+
+        println!("  {} Session started", "✓".green());
+    }
 
     // Execute test steps
     println!("\n{}", "Steps:".cyan());
@@ -540,8 +610,54 @@ async fn execute_evaluate_step(
             frame_id: None,
             context: EvaluateContext::Watch,
         })
-        .await?;
+        .await;
 
+    // Check if we expect failure
+    let expect_success = expect.and_then(|e| e.success).unwrap_or(true);
+
+    if !expect_success {
+        // We expect evaluation to fail
+        match result {
+            Err(_) => {
+                println!(
+                    "  {} Step {}: evaluate '{}' (expected failure)",
+                    "✓".green(),
+                    step_num,
+                    expression.dimmed()
+                );
+                return Ok(());
+            }
+            Ok(val) => {
+                // Check if the result contains an error indicator
+                let eval_result: EvaluateResult = serde_json::from_value(val)
+                    .map_err(|e| Error::TestAssertion(format!("Failed to parse evaluate result: {}", e)))?;
+
+                // If result_contains is specified, check if error message matches
+                if let Some(exp) = expect {
+                    if let Some(expected_substr) = &exp.result_contains {
+                        if eval_result.result.to_lowercase().contains(&expected_substr.to_lowercase()) {
+                            println!(
+                                "  {} Step {}: evaluate '{}' = {} (expected error)",
+                                "✓".green(),
+                                step_num,
+                                expression.dimmed(),
+                                eval_result.result.dimmed()
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+
+                return Err(Error::TestAssertion(format!(
+                    "Evaluate '{}': expected failure but got result '{}'",
+                    expression, eval_result.result
+                )));
+            }
+        }
+    }
+
+    // Normal success path
+    let result = result?;
     let eval_result: EvaluateResult = serde_json::from_value(result)
         .map_err(|e| Error::TestAssertion(format!("Failed to parse evaluate result: {}", e)))?;
 
@@ -610,16 +726,42 @@ fn parse_command(s: &str) -> Result<Command> {
                 ));
             }
             // Handle "break add <location>" or just "break <location>"
-            let location_str = if args[0] == "add" && args.len() > 1 {
-                args[1..].join(" ")
-            } else {
-                args.join(" ")
-            };
+            // Also handle --condition "expr" flag
+            let mut location_str = String::new();
+            let mut condition: Option<String> = None;
+            let mut i = 0;
+
+            // Skip "add" subcommand if present AND there are more args
+            // (otherwise "add" is the function name to break on)
+            if args.get(0) == Some(&"add") && args.len() > 1 {
+                i = 1;
+            }
+
+            while i < args.len() {
+                if args[i] == "--condition" && i + 1 < args.len() {
+                    // Collect condition expression (may be quoted)
+                    i += 1;
+                    let mut cond_parts = Vec::new();
+                    while i < args.len() && !args[i].starts_with("--") {
+                        cond_parts.push(args[i]);
+                        i += 1;
+                    }
+                    condition = Some(cond_parts.join(" ").trim_matches('"').to_string());
+                } else if !args[i].starts_with("--") {
+                    if !location_str.is_empty() {
+                        location_str.push(' ');
+                    }
+                    location_str.push_str(args[i]);
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
 
             let location = BreakpointLocation::parse(&location_str)?;
             Ok(Command::BreakpointAdd {
                 location,
-                condition: None,
+                condition,
                 hit_count: None,
             })
         }
@@ -740,6 +882,33 @@ fn parse_command(s: &str) -> Result<Command> {
         "stop" => Ok(Command::Stop),
         "detach" => Ok(Command::Detach),
         "restart" => Ok(Command::Restart),
+
+        "output" => {
+            // Parse --tail N and --clear flags
+            let mut tail: Option<usize> = None;
+            let mut clear = false;
+            let mut i = 0;
+            while i < args.len() {
+                match args[i] {
+                    "--tail" => {
+                        if i + 1 < args.len() {
+                            tail = args[i + 1].parse().ok();
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    "--clear" => {
+                        clear = true;
+                        i += 1;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+            Ok(Command::GetOutput { tail, clear })
+        }
 
         _ => Err(Error::Config(format!("Unknown command: {}", cmd))),
     }

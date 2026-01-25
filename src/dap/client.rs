@@ -149,90 +149,141 @@ impl DapClient {
         })
     }
 
-    /// Spawn a new DAP adapter that uses TCP for communication (e.g., Delve)
-    ///
-    /// This spawns the adapter with a --listen flag, waits for it to output
-    /// the port it's listening on, then connects via TCP.
-    pub async fn spawn_tcp(adapter_path: &Path, args: &[String]) -> Result<Self> {
+    /// Spawn a new DAP adapter that uses TCP for communication (e.g., Delve, js-debug)
+    pub async fn spawn_tcp(
+        adapter_path: &Path,
+        args: &[String],
+        spawn_style: &crate::common::config::TcpSpawnStyle,
+    ) -> Result<Self> {
         use crate::common::parse_listen_address;
         use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
 
-        // Build command with --listen=127.0.0.1:0 to get a random available port
-        let mut cmd = Command::new(adapter_path);
-        cmd.args(args)
-            .arg("--listen=127.0.0.1:0")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let (mut adapter, addr) = match spawn_style {
+            crate::common::config::TcpSpawnStyle::TcpListen => {
+                let mut cmd = Command::new(adapter_path);
+                cmd.args(args)
+                    .arg("--listen=127.0.0.1:0")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
 
-        let mut adapter = cmd.spawn().map_err(|e| {
-            Error::AdapterStartFailed(format!(
-                "Failed to start {}: {}",
-                adapter_path.display(),
-                e
-            ))
-        })?;
-
-        // Read stdout to find the listening address
-        // Delve outputs: "DAP server listening at: 127.0.0.1:PORT"
-        let stdout = adapter.stdout.take().ok_or_else(|| {
-            let _ = adapter.start_kill();
-            Error::AdapterStartFailed("Failed to get adapter stdout".to_string())
-        })?;
-
-        let mut stdout_reader = TokioBufReader::new(stdout);
-        let mut line = String::new();
-
-        // Wait for the "listening at" message with timeout
-        let addr_result = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                line.clear();
-                let bytes_read = stdout_reader.read_line(&mut line).await.map_err(|e| {
-                    Error::AdapterStartFailed(format!("Failed to read adapter output: {}", e))
+                let mut adapter = cmd.spawn().map_err(|e| {
+                    Error::AdapterStartFailed(format!(
+                        "Failed to start {}: {}",
+                        adapter_path.display(),
+                        e
+                    ))
                 })?;
 
-                if bytes_read == 0 {
-                    return Err(Error::AdapterStartFailed(
-                        "Adapter exited before outputting listen address".to_string(),
-                    ));
-                }
+                let stdout = adapter.stdout.take().ok_or_else(|| {
+                    let _ = adapter.start_kill();
+                    Error::AdapterStartFailed("Failed to get adapter stdout".to_string())
+                })?;
 
-                tracing::debug!("Delve output: {}", line.trim());
+                let mut stdout_reader = TokioBufReader::new(stdout);
+                let mut line = String::new();
 
-                // Look for the listening address in the output
-                if let Some(addr) = parse_listen_address(&line) {
-                    return Ok(addr);
-                }
+                let addr_result = tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        line.clear();
+                        let bytes_read = stdout_reader.read_line(&mut line).await.map_err(|e| {
+                            Error::AdapterStartFailed(format!("Failed to read adapter output: {}", e))
+                        })?;
+
+                        if bytes_read == 0 {
+                            return Err(Error::AdapterStartFailed(
+                                "Adapter exited before outputting listen address".to_string(),
+                            ));
+                        }
+
+                        tracing::debug!("Adapter output: {}", line.trim());
+
+                        if let Some(addr) = parse_listen_address(&line) {
+                            return Ok(addr);
+                        }
+                    }
+                })
+                .await;
+
+                let addr = match addr_result {
+                    Ok(Ok(addr)) => addr,
+                    Ok(Err(e)) => {
+                        let _ = adapter.start_kill();
+                        return Err(e);
+                    }
+                    Err(_) => {
+                        let _ = adapter.start_kill();
+                        return Err(Error::AdapterStartFailed(
+                            "Timeout waiting for adapter to start listening".to_string(),
+                        ));
+                    }
+                };
+
+                (adapter, addr)
             }
-        })
-        .await;
+            crate::common::config::TcpSpawnStyle::TcpPortArg => {
+                use std::net::TcpListener as StdTcpListener;
 
-        // Handle timeout or error - cleanup adapter before returning
-        let addr = match addr_result {
-            Ok(Ok(addr)) => addr,
-            Ok(Err(e)) => {
-                let _ = adapter.start_kill();
-                return Err(e);
-            }
-            Err(_) => {
-                let _ = adapter.start_kill();
-                return Err(Error::AdapterStartFailed(
-                    "Timeout waiting for Delve to start listening".to_string(),
-                ));
+                let listener = StdTcpListener::bind("127.0.0.1:0").map_err(|e| {
+                    Error::AdapterStartFailed(format!("Failed to allocate port: {}", e))
+                })?;
+                let port = listener.local_addr().map_err(|e| {
+                    Error::AdapterStartFailed(format!("Failed to get port: {}", e))
+                })?.port();
+                // Race condition window: port released before adapter binds. Mitigated by immediate spawn + 500ms buffer.
+                // If connection fails, port may have been reallocated by OS.
+                drop(listener);
+
+                let addr = format!("127.0.0.1:{}", port);
+
+                let mut cmd = Command::new(adapter_path);
+                let mut full_args = args.to_vec();
+                full_args.push(port.to_string());
+
+                cmd.args(&full_args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+
+                let adapter = cmd.spawn().map_err(|e| {
+                    Error::AdapterStartFailed(format!(
+                        "Failed to start {}: {}",
+                        adapter_path.display(),
+                        e
+                    ))
+                })?;
+
+                (adapter, addr)
             }
         };
 
-        tracing::info!("Connecting to Delve DAP server at {}", addr);
+        tracing::info!("Connecting to DAP adapter at {}", addr);
 
-        // Connect to the TCP port - cleanup adapter on failure
-        let stream = match TcpStream::connect(&addr).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = adapter.start_kill();
-                return Err(Error::AdapterStartFailed(format!(
-                    "Failed to connect to Delve at {}: {}",
-                    addr, e
-                )));
+        // Retry TCP connection with exponential backoff
+        // Handles adapters that need time to start listening (e.g., js-debug)
+        let stream = {
+            let mut last_error = None;
+            let mut delay = Duration::from_millis(100);
+            let max_delay = Duration::from_millis(1000);
+            let timeout_duration = Duration::from_secs(10);
+            let start = std::time::Instant::now();
+
+            loop {
+                match TcpStream::connect(&addr).await {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        last_error = Some(e);
+                        if start.elapsed() >= timeout_duration {
+                            let _ = adapter.start_kill();
+                            return Err(Error::AdapterStartFailed(format!(
+                                "Failed to connect to adapter at {} after {:?}: {}",
+                                addr, timeout_duration, last_error.unwrap()
+                            )));
+                        }
+                        tokio::time::sleep(delay).await;
+                        delay = std::cmp::min(delay * 2, max_delay);
+                    }
+                }
             }
         };
 

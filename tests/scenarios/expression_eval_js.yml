@@ -1,0 +1,80 @@
+# JavaScript Expression Evaluation Test
+# Tests evaluate command for inspecting and computing expressions
+
+name: "JavaScript Expression Evaluation Test"
+description: "Verifies expression evaluation in debug context"
+
+# Debug target configuration
+target:
+  program: "tests/fixtures/simple.js"
+  args: []
+  adapter: "js-debug"
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set breakpoint after variables are initialized (line 28 is after arr)
+  - action: command
+    command: "break simple.js:30"
+    expect:
+      success: true
+
+  # 2. Continue to breakpoint
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 15
+    expect:
+      reason: "breakpoint"
+
+  # 3. Evaluate simple variable
+  - action: command
+    command: "eval x"
+    expect:
+      success: true
+      output_contains: "10"
+
+  # 4. Evaluate expression with arithmetic
+  - action: command
+    command: "eval x + y"
+    expect:
+      success: true
+      output_contains: "30"
+
+  # 5. Evaluate function call expression
+  - action: command
+    command: "eval add(5, 3)"
+    expect:
+      success: true
+      output_contains: "8"
+
+  # 6. Evaluate object property access
+  - action: command
+    command: "eval obj.name"
+    expect:
+      success: true
+      output_contains: "test"
+
+  # 7. Evaluate array access
+  - action: command
+    command: "eval arr[1]"
+    expect:
+      success: true
+      output_contains: "2"
+
+  # 8. Evaluate string method
+  - action: command
+    command: "eval message.toUpperCase()"
+    expect:
+      success: true
+      output_contains: "HELLO"
+
+  # 9. Continue to exit
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "terminated"
