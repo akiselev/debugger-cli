@@ -175,12 +175,27 @@ impl DebugSession {
             .map(|p| p.to_string_lossy().into_owned());
 
         // Build launch arguments - adapter-specific fields
-        let is_python = adapter_name == "debugpy" 
+        let is_python = adapter_name == "debugpy"
             || program.extension().map(|e| e == "py").unwrap_or(false);
         let is_go = adapter_name == "go"
             || adapter_name == "delve"
             || adapter_name == "dlv";
+        let is_lldb = adapter_name == "lldb-dap"
+            || adapter_name == "lldb"
+            || adapter_name.contains("lldb");
         
+        // Get init/pre-run commands from adapter config (useful for settings like disable-aslr)
+        let init_commands = if adapter_config.init_commands.is_empty() {
+            None
+        } else {
+            Some(adapter_config.init_commands.clone())
+        };
+        let pre_run_commands = if adapter_config.pre_run_commands.is_empty() {
+            None
+        } else {
+            Some(adapter_config.pre_run_commands.clone())
+        };
+
         let launch_args = LaunchArguments {
             program: program.to_string_lossy().into_owned(),
             args: args.clone(),
@@ -188,8 +203,10 @@ impl DebugSession {
             env: None,
             stop_on_entry,
             // lldb-dap specific
-            init_commands: None,
-            pre_run_commands: None,
+            init_commands,
+            pre_run_commands,
+            // Disable ASLR setting - set to false to avoid personality() issues in containers
+            disable_aslr: if is_lldb { Some(false) } else { None },
             // debugpy specific
             request: if is_python { Some("launch".to_string()) } else { None },
             console: if is_python { Some("internalConsole".to_string()) } else { None },

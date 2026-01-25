@@ -131,6 +131,10 @@ pub struct LaunchArguments {
     pub init_commands: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_run_commands: Option<Vec<String>>,
+    /// Whether to disable ASLR when launching the process (lldb-dap)
+    /// Set to false to avoid personality() syscall issues in containers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_aslr: Option<bool>,
     
     // === debugpy (Python) specific ===
     /// Request type: "launch" or "attach" (required by debugpy)

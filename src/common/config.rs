@@ -55,6 +55,15 @@ pub struct AdapterConfig {
     /// Transport mode for DAP communication
     #[serde(default)]
     pub transport: TransportMode,
+
+    /// LLDB init commands to run before the target is created
+    #[serde(default)]
+    pub init_commands: Vec<String>,
+
+    /// LLDB pre-run commands to run after target creation but before launch
+    /// Useful for settings like "settings set target.disable-aslr false"
+    #[serde(default)]
+    pub pre_run_commands: Vec<String>,
 }
 
 /// Default settings
@@ -195,6 +204,8 @@ impl Config {
             path,
             args: Vec::new(),
             transport: TransportMode::default(),
+            init_commands: Vec::new(),
+            pre_run_commands: Vec::new(),
         })
     }
 }
