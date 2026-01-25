@@ -153,6 +153,11 @@ pub struct LaunchArguments {
     /// Stop at entry point (Delve uses stopAtEntry instead of stopOnEntry)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_at_entry: Option<bool>,
+
+    // === GDB-based adapters (GDB, CUDA-GDB) ===
+    /// Stop at beginning of main (GDB uses stopAtBeginningOfMainSubprogram instead of stopOnEntry)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_at_beginning_of_main_subprogram: Option<bool>,
 }
 
 /// Attach request arguments

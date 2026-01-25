@@ -2,9 +2,21 @@
 
 ## Overview
 
-This plan adds native DAP support for GDB and CUDA-GDB debuggers to debugger-cli. The implementation follows a phased approach: Phase 0 validates GDB's native DAP mode (`-i=dap`) on standard GDB first, Phase 1 implements CUDA-GDB support using the same pattern, and Phase 2 (deferred) would add cdt-gdb-adapter as a fallback if native DAP proves insufficient.
+This plan adds DAP support for GDB and CUDA-GDB debuggers to debugger-cli.
 
-GDB 14+ includes native DAP support via the `-i=dap` interpreter flag, which CUDA-GDB (based on GDB 14.2) should inherit. This approach minimizes external dependencies while leveraging existing Stdio transport patterns from lldb-dap.
+**Key Discovery (2026-01-24):** CUDA-GDB 13.x does NOT support native DAP mode (`-i=dap`) despite being based on GDB 14.2. NVIDIA stripped this feature from their fork. The adapter now uses cdt-gdb-adapter (Node.js-based MI-to-DAP bridge) to provide DAP support for cuda-gdb.
+
+### Architecture
+
+```
+Standard GDB:  Client <-> GDB -i=dap (native DAP) <-> Target
+CUDA-GDB:      Client <-> cdt-gdb-adapter (DAP) <-> cuda-gdb (MI mode) <-> GPU
+```
+
+### Requirements for CUDA-GDB
+- CUDA Toolkit with cuda-gdb (Linux only)
+- Node.js runtime
+- cdt-gdb-adapter npm package: `npm install -g cdt-gdb-adapter`
 
 ## Planning Context
 

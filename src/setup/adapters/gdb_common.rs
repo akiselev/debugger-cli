@@ -2,8 +2,30 @@
 
 /// Extracts version string from GDB --version output
 ///
-/// Returns first token starting with digit (handles varying GDB output formats)
+/// Searches for "GNU gdb" line and extracts the version number.
+/// Handles cuda-gdb output which may have "exec:" wrapper on first line.
 pub fn parse_gdb_version(output: &str) -> Option<String> {
+    for line in output.lines() {
+        // Skip cuda-gdb exec wrapper line
+        if line.starts_with("exec:") {
+            continue;
+        }
+        // Look for "GNU gdb X.Y" pattern to get the base GDB version
+        if line.contains("GNU gdb") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            for (i, part) in parts.iter().enumerate() {
+                if *part == "gdb" {
+                    if let Some(version) = parts.get(i + 1) {
+                        // Verify it starts with a digit (version number)
+                        if version.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                            return Some(version.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: try first line with digit token (for non-GDB outputs)
     output
         .lines()
         .next()

@@ -199,6 +199,8 @@ impl DebugSession {
             mode: if is_go { Some("exec".to_string()) } else { None },
             // Delve uses stopAtEntry instead of stopOnEntry
             stop_at_entry: if is_go && stop_on_entry { Some(true) } else { None },
+            // GDB-based adapters (gdb, cuda-gdb) use stopAtBeginningOfMainSubprogram
+            stop_at_beginning_of_main_subprogram: if (adapter_name == "gdb" || adapter_name == "cuda-gdb") && stop_on_entry { Some(true) } else { None },
         };
 
         tracing::debug!(
