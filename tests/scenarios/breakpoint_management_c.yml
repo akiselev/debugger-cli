@@ -46,6 +46,12 @@ steps:
     expect:
       reason: "breakpoint"
 
+  # Remove remaining breakpoints to avoid hitting them again
+  - action: command
+    command: "breakpoint remove all"
+    expect:
+      success: true
+
   - action: command
     command: "continue"
 

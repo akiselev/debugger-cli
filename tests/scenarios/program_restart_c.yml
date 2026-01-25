@@ -31,6 +31,14 @@ steps:
     expect:
       success: true
 
+  # After restart, wait for any stop event (may be entry, breakpoint, or exception depending on platform)
+  - action: await
+    timeout: 10
+
+  # Continue to ensure we hit the breakpoint at main
+  - action: command
+    command: "continue"
+
   - action: await
     timeout: 10
     expect:
@@ -40,6 +48,12 @@ steps:
     asserts:
       - index: 0
         function: "main"
+
+  # Remove breakpoints before final continue
+  - action: command
+    command: "breakpoint remove all"
+    expect:
+      success: true
 
   - action: command
     command: "continue"
