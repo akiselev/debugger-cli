@@ -8,7 +8,7 @@ setup:
   - shell: "gcc -g tests/fixtures/simple.c -o tests/fixtures/test_simple_c"
 
 target:
-  program: "tests/fixtures/test_simple_c"
+  program: "../fixtures/test_simple_c"
   args: []
   stop_on_entry: true
 
@@ -64,6 +64,13 @@ steps:
 
   - action: command
     command: "down"
+    expect:
+      success: true
+
+  # Delete the breakpoint before continuing to avoid hitting it more times
+  # (factorial is recursive and will hit the breakpoint 5 times total)
+  - action: command
+    command: "breakpoint remove all"
     expect:
       success: true
 

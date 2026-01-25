@@ -726,16 +726,42 @@ fn parse_command(s: &str) -> Result<Command> {
                 ));
             }
             // Handle "break add <location>" or just "break <location>"
-            let location_str = if args[0] == "add" && args.len() > 1 {
-                args[1..].join(" ")
-            } else {
-                args.join(" ")
-            };
+            // Also handle --condition "expr" flag
+            let mut location_str = String::new();
+            let mut condition: Option<String> = None;
+            let mut i = 0;
+
+            // Skip "add" subcommand if present AND there are more args
+            // (otherwise "add" is the function name to break on)
+            if args.get(0) == Some(&"add") && args.len() > 1 {
+                i = 1;
+            }
+
+            while i < args.len() {
+                if args[i] == "--condition" && i + 1 < args.len() {
+                    // Collect condition expression (may be quoted)
+                    i += 1;
+                    let mut cond_parts = Vec::new();
+                    while i < args.len() && !args[i].starts_with("--") {
+                        cond_parts.push(args[i]);
+                        i += 1;
+                    }
+                    condition = Some(cond_parts.join(" ").trim_matches('"').to_string());
+                } else if !args[i].starts_with("--") {
+                    if !location_str.is_empty() {
+                        location_str.push(' ');
+                    }
+                    location_str.push_str(args[i]);
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
 
             let location = BreakpointLocation::parse(&location_str)?;
             Ok(Command::BreakpointAdd {
                 location,
-                condition: None,
+                condition,
                 hit_count: None,
             })
         }
@@ -856,6 +882,33 @@ fn parse_command(s: &str) -> Result<Command> {
         "stop" => Ok(Command::Stop),
         "detach" => Ok(Command::Detach),
         "restart" => Ok(Command::Restart),
+
+        "output" => {
+            // Parse --tail N and --clear flags
+            let mut tail: Option<usize> = None;
+            let mut clear = false;
+            let mut i = 0;
+            while i < args.len() {
+                match args[i] {
+                    "--tail" => {
+                        if i + 1 < args.len() {
+                            tail = args[i + 1].parse().ok();
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    "--clear" => {
+                        clear = true;
+                        i += 1;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+            Ok(Command::GetOutput { tail, clear })
+        }
 
         _ => Err(Error::Config(format!("Unknown command: {}", cmd))),
     }

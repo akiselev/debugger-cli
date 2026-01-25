@@ -9,14 +9,14 @@ setup:
   - shell: "gcc -g tests/fixtures/multi_source/main.c tests/fixtures/multi_source/utils.c -o tests/fixtures/multi_source/test_multi"
 
 target:
-  program: "tests/fixtures/multi_source/test_multi"
-  adapter: "lldb"
+  program: "../fixtures/multi_source/test_multi"
   stop_on_entry: true
 
 steps:
   # Set breakpoint in utils.c (separate file from main)
+  # Use function name since file paths can be tricky with relative resolution
   - action: command
-    command: "break tests/fixtures/multi_source/utils.c:6"
+    command: "break helper_add"
     expect:
       success: true
 
