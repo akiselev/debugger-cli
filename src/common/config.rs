@@ -199,19 +199,43 @@ impl Config {
 
     /// Get adapter configuration by name
     ///
-    /// Falls back to searching PATH if not explicitly configured
+    /// Falls back to searching PATH if not explicitly configured.
+    /// For common adapters, also tries alternative names (e.g., lldb-vscode for lldb-dap).
     pub fn get_adapter(&self, name: &str) -> Option<AdapterConfig> {
         // Check explicit configuration first
         if let Some(config) = self.adapters.get(name) {
             return Some(config.clone());
         }
 
-        // Try to find in PATH
-        which::which(name).ok().map(|path| AdapterConfig {
-            path,
-            args: Vec::new(),
-            transport: TransportMode::default(),
-            spawn_style: TcpSpawnStyle::default(),
-        })
+        // Build list of names to try: primary name + any fallbacks
+        let names_to_try = adapter_fallback_names(name);
+
+        // Try to find any of the names in PATH
+        for try_name in names_to_try {
+            if let Ok(path) = which::which(try_name) {
+                return Some(AdapterConfig {
+                    path,
+                    args: Vec::new(),
+                    transport: TransportMode::default(),
+                    spawn_style: TcpSpawnStyle::default(),
+                });
+            }
+        }
+
+        None
+    }
+}
+
+/// Returns a list of adapter names to try, with the primary name first.
+/// This handles cases where adapters have different names on different systems
+/// (e.g., lldb-dap vs lldb-vscode on Ubuntu).
+pub fn adapter_fallback_names(name: &str) -> Vec<&str> {
+    match name {
+        // LLDB adapter: newer name is lldb-dap, older/Ubuntu name is lldb-vscode
+        "lldb-dap" => vec!["lldb-dap", "lldb-vscode"],
+        "lldb-vscode" => vec!["lldb-vscode", "lldb-dap"],
+        "lldb" => vec!["lldb-dap", "lldb-vscode"],
+        // Other adapters just use their exact name
+        _ => vec![name],
     }
 }

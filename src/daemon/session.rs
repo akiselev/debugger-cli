@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::sync::mpsc;
 
-use crate::common::{config::{Config, TransportMode}, Error, Result};
+use crate::common::{config::{adapter_fallback_names, Config, TransportMode}, Error, Result};
 use crate::dap::{
     self, Breakpoint, Capabilities, DapClient, Event, FunctionBreakpoint, LaunchArguments,
     AttachArguments, Scope, SourceBreakpoint, StackFrame, Thread, Variable,
@@ -137,7 +137,8 @@ impl DebugSession {
         let adapter_name = adapter_name.unwrap_or_else(|| config.defaults.adapter.clone());
 
         let adapter_config = config.get_adapter(&adapter_name).ok_or_else(|| {
-            Error::adapter_not_found(&adapter_name, &[&adapter_name])
+            let searched = adapter_fallback_names(&adapter_name);
+            Error::adapter_not_found(&adapter_name, &searched)
         })?;
 
         tracing::info!(
@@ -368,7 +369,8 @@ impl DebugSession {
         let adapter_name = adapter_name.unwrap_or_else(|| config.defaults.adapter.clone());
 
         let adapter_config = config.get_adapter(&adapter_name).ok_or_else(|| {
-            Error::adapter_not_found(&adapter_name, &[&adapter_name])
+            let searched = adapter_fallback_names(&adapter_name);
+            Error::adapter_not_found(&adapter_name, &searched)
         })?;
 
         tracing::info!(
