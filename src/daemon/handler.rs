@@ -243,7 +243,7 @@ async fn handle_command_inner(
         }
 
         // === State Inspection ===
-        Command::StackTrace { thread_id, limit } => {
+        Command::StackTrace { thread_id: _, limit } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
             let frames = sess.stack_trace(limit).await?;
 

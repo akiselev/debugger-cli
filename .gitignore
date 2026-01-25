@@ -23,3 +23,4 @@ target
 
 # Test binaries
 tests/e2e/test_*
+tests/fixtures/cuda_test

@@ -659,7 +659,7 @@ impl DebugSession {
         self.next_bp_id += 1;
 
         match &location {
-            BreakpointLocation::Line { file, line } => {
+            BreakpointLocation::Line { file, line: _ } => {
                 // Add to our tracking
                 let stored = StoredBreakpoint {
                     id: bp_id,
@@ -686,7 +686,7 @@ impl DebugSession {
                 let info = self.get_breakpoint_info(bp_id)?;
                 Ok(info)
             }
-            BreakpointLocation::Function { name } => {
+            BreakpointLocation::Function { name: _ } => {
                 let stored = StoredBreakpoint {
                     id: bp_id,
                     location: location.clone(),
