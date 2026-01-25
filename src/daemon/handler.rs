@@ -57,13 +57,14 @@ async fn handle_command_inner(
             args,
             adapter,
             stop_on_entry,
+            initial_breakpoints,
         } => {
             if session.is_some() {
                 return Err(Error::SessionAlreadyActive);
             }
 
             let new_session =
-                DebugSession::launch(config, &program, args, adapter, stop_on_entry).await?;
+                DebugSession::launch(config, &program, args, adapter, stop_on_entry, initial_breakpoints).await?;
             *session = Some(new_session);
 
             Ok(json!({

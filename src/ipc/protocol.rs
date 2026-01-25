@@ -75,6 +75,9 @@ pub enum Command {
         args: Vec<String>,
         adapter: Option<String>,
         stop_on_entry: bool,
+        /// Initial breakpoints to set before program starts (file:line or function name)
+        #[serde(default)]
+        initial_breakpoints: Vec<String>,
     },
 
     /// Attach to a running process
