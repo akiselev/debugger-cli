@@ -23,7 +23,15 @@ target
 
 # Test binaries
 tests/e2e/test_*
+tests/fixtures/test_*
 tests/fixtures/cuda_test
 
-# JS stuff
+# JS/TS stuff
 node_modules/
+package-lock.json
+
+# TypeScript compiled output (for fixtures - dist is committed for test reliability)
+# tests/fixtures/dist/ is intentionally committed
+
+# Docker build artifacts
+.docker/

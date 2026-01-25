@@ -1,0 +1,84 @@
+# JavaScript Stepping Test
+# Tests step-in, step-out, and step-over functionality
+
+name: "JavaScript Stepping Test"
+description: "Verifies stepping commands work correctly in JavaScript"
+
+# Debug target configuration
+target:
+  program: "tests/fixtures/simple.js"
+  args: []
+  adapter: "js-debug"
+  stop_on_entry: true
+
+# Test steps
+steps:
+  # 1. Set breakpoint at function call (line with add(x, y))
+  - action: command
+    command: "break simple.js:31"
+    expect:
+      success: true
+
+  # 2. Continue to breakpoint
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 15
+    expect:
+      reason: "breakpoint"
+      file: "simple.js"
+
+  # 3. Step into the function
+  - action: command
+    command: "step"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 4. Verify we're inside the add function
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "add"
+
+  # 5. Step out back to main
+  - action: command
+    command: "finish"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 6. Verify we're back in main
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "main"
+
+  # 7. Step over (should not enter multiply)
+  - action: command
+    command: "next"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  # 8. Verify we skipped into multiply
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "main"
+
+  # 9. Continue to exit
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "terminated"
