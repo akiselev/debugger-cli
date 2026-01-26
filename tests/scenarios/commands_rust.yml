@@ -1,0 +1,207 @@
+# Rust Command Coverage Test
+# Exercises debugger commands and subcommands against a Rust fixture.
+
+name: "Rust Command Coverage Test"
+description: "Rust coverage for breakpoints, stepping, stack, threads, context, output, and session commands"
+
+setup:
+  - shell: "mkdir -p tests/fixtures/bin && rustc -g tests/fixtures/simple.rs -o tests/fixtures/bin/simple_rs"
+
+target:
+  program: "tests/fixtures/bin/simple_rs"
+  args: []
+  stop_on_entry: true
+
+steps:
+  - action: command
+    command: "b tests/fixtures/simple.rs:23"
+    expect:
+      success: true
+
+  - action: command
+    command: "breakpoint add tests/fixtures/simple.rs:5"
+    expect:
+      success: true
+
+  - action: command
+    command: "breakpoint list"
+    expect:
+      output_contains: "breakpoints"
+
+  - action: command
+    command: "breakpoint disable 2"
+    expect:
+      output_contains: "disabled"
+
+  - action: command
+    command: "breakpoint enable 2"
+    expect:
+      output_contains: "enabled"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 15
+    expect:
+      reason: "breakpoint"
+      file: "simple.rs"
+      line: 23
+
+  - action: command
+    command: "pause"
+    expect:
+      allow_failure: true
+
+  - action: command
+    command: "locals"
+    expect:
+      output_contains: "variables"
+
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        value_contains: "10"
+      - name: "y"
+        value_contains: "20"
+
+  - action: command
+    command: "print x + y"
+    expect:
+      output_contains: "30"
+
+  - action: command
+    command: "eval x + y"
+    expect:
+      output_contains: "30"
+
+  - action: command
+    command: "step"
+    expect:
+      output_contains: "stepping"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  - action: command
+    command: "backtrace"
+    expect:
+      output_contains: "frames"
+
+  - action: inspect_stack
+    asserts:
+      - index: 0
+        function: "add"
+        file: "simple.rs"
+      - index: 1
+        function: "main"
+
+  - action: command
+    command: "frame 0"
+    expect:
+      output_contains: "selected"
+
+  - action: command
+    command: "up"
+    expect:
+      output_contains: "selected"
+
+  - action: inspect_locals
+    asserts:
+      - name: "x"
+        value_contains: "10"
+      - name: "y"
+        value_contains: "20"
+
+  - action: command
+    command: "down"
+    expect:
+      output_contains: "selected"
+
+  - action: inspect_locals
+    asserts:
+      - name: "a"
+        value_contains: "10"
+      - name: "b"
+        value_contains: "20"
+
+  - action: command
+    command: "next"
+    expect:
+      output_contains: "stepping"
+
+  - action: await
+    timeout: 10
+    expect:
+      reason: "step"
+
+  - action: command
+    command: "finish"
+    expect:
+      output_contains: "stepping"
+
+  - action: await
+    timeout: 10
+
+  - action: command
+    command: "context 5"
+    expect:
+      output_contains: "source_lines"
+
+  - action: command
+    command: "threads"
+    expect:
+      output_contains: "threads"
+
+  - action: command
+    command: "thread 1"
+    expect:
+      output_contains: "selected"
+
+  - action: command
+    command: "frame 0"
+    expect:
+      output_contains: "selected"
+
+  - action: command
+    command: "breakpoint remove 2"
+    expect:
+      output_contains: "removed"
+
+  - action: command
+    command: "breakpoint remove --all"
+    expect:
+      output_contains: "removed"
+
+  - action: command
+    command: "continue"
+
+  - action: await
+    timeout: 15
+    expect:
+      reason: "exited"
+
+  - action: command
+    command: "output"
+    expect:
+      output_contains: "Sum"
+
+  - action: check_output
+    contains: "Factorial"
+
+  - action: command
+    command: "restart"
+    expect:
+      allow_failure: true
+
+  - action: command
+    command: "stop"
+    expect:
+      allow_failure: true
+
+  - action: command
+    command: "detach"
+    expect:
+      allow_failure: true

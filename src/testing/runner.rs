@@ -301,6 +301,7 @@ async fn execute_command_step(
     let cmd = parse_command(command_str)?;
 
     let result = client.send_command(cmd).await;
+    let allow_failure = expect.map(|exp| exp.allow_failure).unwrap_or(false);
 
     // Check expectations
     if let Some(exp) = expect {
@@ -326,7 +327,29 @@ async fn execute_command_step(
         return Ok(());
     }
 
-    result?;
+    if allow_failure && result.is_err() {
+        println!(
+            "  {} Step {}: {} (allowed failure)",
+            "✓".green(),
+            step_num,
+            command_str.dimmed()
+        );
+        return Ok(());
+    }
+
+    let value = result?;
+
+    if let Some(exp) = expect {
+        if let Some(expected_substr) = &exp.output_contains {
+            let output = serde_json::to_string(&value).unwrap_or_default();
+            if !output.contains(expected_substr) {
+                return Err(Error::TestAssertion(format!(
+                    "Command '{}' output missing '{}'",
+                    command_str, expected_substr
+                )));
+            }
+        }
+    }
 
     println!(
         "  {} Step {}: {}",
@@ -884,6 +907,51 @@ fn parse_command(s: &str) -> Result<Command> {
                 frame_id: None,
                 context: EvaluateContext::Watch,
             })
+        }
+
+        "context" | "where" => {
+            let lines = if let Some(value) = args.first() {
+                value.parse().map_err(|_| {
+                    Error::Config(format!("Invalid context line count: {}", value))
+                })?
+            } else {
+                5
+            };
+            Ok(Command::Context { lines })
+        }
+
+        "output" => {
+            let mut tail = None;
+            let mut clear = false;
+            let mut idx = 0;
+
+            while idx < args.len() {
+                match args[idx] {
+                    "--tail" | "-t" => {
+                        if idx + 1 >= args.len() {
+                            return Err(Error::Config(
+                                "output --tail requires a number".to_string(),
+                            ));
+                        }
+                        tail = Some(args[idx + 1].parse().map_err(|_| {
+                            Error::Config(format!("Invalid tail value: {}", args[idx + 1]))
+                        })?);
+                        idx += 2;
+                    }
+                    "--clear" => {
+                        clear = true;
+                        idx += 1;
+                    }
+                    other => {
+                        return Err(Error::Config(format!(
+                            "Unknown output option: {}",
+                            other
+                        )));
+                    }
+                }
+            }
+
+            Ok(Command::GetOutput { tail, clear })
         }
 
         "stop" => Ok(Command::Stop),
