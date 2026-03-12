@@ -706,7 +706,53 @@ impl DapClient {
     /// configurationDone is sent. This sends the launch request but doesn't
     /// wait for the response.
     pub async fn launch_no_wait(&mut self, args: LaunchArguments) -> Result<i64> {
-        self.send_request("launch", Some(serde_json::to_value(&args)?)).await
+        let seq = self.next_seq();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut pending_guard = self.pending.lock().await;
+            pending_guard.insert(seq, tx);
+        }
+
+        let request = serde_json::json!({
+            "seq": seq,
+            "type": "request",
+            "command": "launch",
+            "arguments": serde_json::to_value(&args)?
+        });
+
+        let json = serde_json::to_string(&request)?;
+        tracing::trace!("DAP >>> {}", json);
+
+        if let Err(e) = codec::write_message(&mut self.writer, &json).await {
+            let mut pending_guard = self.pending.lock().await;
+            pending_guard.remove(&seq);
+            return Err(e);
+        }
+
+        // Spawn a background task to await the response and log any failures
+        tokio::spawn(async move {
+            if let Ok(inner_result) = rx.await {
+                match inner_result {
+                    Ok(response) => {
+                        if !response.success {
+                            tracing::error!(
+                                "Launch request failed: {}",
+                                response.message.unwrap_or_else(|| "Unknown error".to_string())
+                            );
+                        } else {
+                            tracing::debug!("Launch request succeeded (async)");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Launch request resulted in an error: {}", e);
+                    }
+                }
+            } else {
+                tracing::debug!("Launch response channel closed before receiving a reply");
+            }
+        });
+
+        Ok(seq)
     }
 
     /// Attach to a running process

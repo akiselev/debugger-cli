@@ -225,17 +225,11 @@ impl DebugSession {
             "Sending DAP launch request"
         );
         
-        // For Python/debugpy, we need to use non-blocking launch because debugpy
-        // doesn't respond to launch until after configurationDone is sent.
-        // We send launch, wait for initialized, send configurationDone, then
-        // the launch response arrives.
-        if is_python {
-            client.launch_no_wait(launch_args).await?;
-            tracing::debug!("DAP launch request sent (no-wait mode for Python)");
-        } else {
-            client.launch(launch_args).await?;
-            tracing::debug!("DAP launch request successful");
-        }
+        // The DAP specification allows adapters to defer the launch response
+        // until after configurationDone is received. To prevent deadlocks with
+        // strict adapters (like debugpy and lldb-dap), we use a non-blocking launch.
+        client.launch_no_wait(launch_args).await?;
+        tracing::debug!("DAP launch request sent (no-wait mode)");
 
         // Wait for initialized event (comes after launch per DAP spec)
         tracing::debug!(timeout_secs = request_timeout.as_secs(), "Waiting for DAP initialized event");
