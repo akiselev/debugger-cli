@@ -53,6 +53,10 @@ pub enum Commands {
         /// Condition for the breakpoint
         #[arg(long, short)]
         condition: Option<String>,
+
+        /// Hit count (break after N hits)
+        #[arg(long)]
+        hit_count: Option<u32>,
     },
 
     /// Continue execution
@@ -141,7 +145,7 @@ pub enum Commands {
     /// Get debuggee stdout/stderr output
     Output {
         /// Stream output continuously
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["tail", "clear"])]
         follow: bool,
 
         /// Get last N lines of output

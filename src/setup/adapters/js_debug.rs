@@ -10,7 +10,7 @@ use crate::setup::installer::{
 use crate::setup::registry::{DebuggerInfo, Platform};
 use crate::setup::verifier::{verify_dap_adapter_tcp, VerifyResult};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 static INFO: DebuggerInfo = DebuggerInfo {
     id: "js-debug",
@@ -98,7 +98,7 @@ impl Installer for JsDebugInstaller {
     }
 }
 
-fn get_dap_executable(adapter_dir: &PathBuf) -> PathBuf {
+fn get_dap_executable(adapter_dir: &Path) -> PathBuf {
     // @vscode/js-debug installs to node_modules/@vscode/js-debug
     let js_path = adapter_dir.join("node_modules/@vscode/js-debug/src/dapDebugServer.js");
     if js_path.exists() {
@@ -107,7 +107,7 @@ fn get_dap_executable(adapter_dir: &PathBuf) -> PathBuf {
     adapter_dir.join("node_modules/@vscode/js-debug/dist/src/dapDebugServer.js")
 }
 
-fn read_package_version(adapter_dir: &PathBuf) -> Option<String> {
+fn read_package_version(adapter_dir: &Path) -> Option<String> {
     let package_json = adapter_dir.join("node_modules/@vscode/js-debug/package.json");
     if !package_json.exists() {
         return None;

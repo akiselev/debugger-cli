@@ -111,7 +111,7 @@ debugger stop
 | `stop` | | Stop debug session and terminate debuggee |
 | `detach` | | Detach from process (keeps it running) |
 | `status` | | Show daemon and session status |
-| `restart` | | Restart program with same arguments |
+| `restart` | | Restart program when supported by the active DAP adapter |
 
 Start options:
 - `--adapter <name>` - Use specific debug adapter
@@ -126,6 +126,8 @@ Start options:
 | `breakpoint remove <id>` | | Remove breakpoint by ID |
 | `breakpoint remove --all` | | Remove all breakpoints |
 | `breakpoint list` | | List all breakpoints |
+| `breakpoint enable <id>` | | Enable a disabled breakpoint |
+| `breakpoint disable <id>` | | Disable a breakpoint without removing it |
 
 Breakpoint options:
 - `--condition <expr>` - Break only when expression is true
@@ -169,6 +171,7 @@ Breakpoint options:
 | `output` | Get program stdout/stderr |
 | `output --follow` | Stream output continuously |
 | `output --tail <n>` | Get last N lines |
+| `output --clear` | Print and clear buffered output |
 
 ### Setup
 
@@ -226,7 +229,7 @@ codelldb = "~/.local/share/debugger-cli/adapters/codelldb/adapter/codelldb"
 | GDB | C, C++ | ✅ Full support (requires GDB 14.1+) |
 | CUDA-GDB | CUDA, C, C++ | ✅ Full support (Linux only) |
 | js-debug | JavaScript, TypeScript | ✅ Full support |
-| CodeLLDB | C, C++, Rust | 🚧 Planned |
+| CodeLLDB | C, C++, Rust | ✅ Full support |
 | cpptools | C, C++ | 🚧 Planned |
 
 ## Examples

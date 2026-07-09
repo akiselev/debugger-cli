@@ -10,7 +10,7 @@ use crate::setup::installer::{
 use crate::setup::registry::{DebuggerInfo, Platform};
 use crate::setup::verifier::{verify_dap_adapter, VerifyResult};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 static INFO: DebuggerInfo = DebuggerInfo {
     id: "python",
@@ -148,7 +148,7 @@ async fn find_python() -> Result<PathBuf> {
 }
 
 /// Get the path to Python in a venv
-fn get_venv_python(venv_dir: &PathBuf) -> PathBuf {
+fn get_venv_python(venv_dir: &Path) -> PathBuf {
     if cfg!(windows) {
         venv_dir.join("Scripts").join("python.exe")
     } else {
@@ -157,7 +157,7 @@ fn get_venv_python(venv_dir: &PathBuf) -> PathBuf {
 }
 
 /// Get the path to pip in a venv
-fn get_venv_pip(venv_dir: &PathBuf) -> PathBuf {
+fn get_venv_pip(venv_dir: &Path) -> PathBuf {
     if cfg!(windows) {
         venv_dir.join("Scripts").join("pip.exe")
     } else {

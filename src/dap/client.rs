@@ -87,6 +87,8 @@ pub struct DapClient {
     seq: AtomicI64,
     /// Adapter capabilities (populated after initialize)
     pub capabilities: Capabilities,
+    /// Default timeout for DAP requests after initialization.
+    request_timeout: Duration,
     /// Pending response waiters
     pending: PendingResponses,
     /// Channel for events (to session)
@@ -141,6 +143,7 @@ impl DapClient {
             writer: DapWriter::Stdio(BufWriter::new(stdin)),
             seq: AtomicI64::new(1),
             capabilities: Capabilities::default(),
+            request_timeout: Duration::from_secs(30),
             pending,
             event_tx,
             event_rx: Some(event_rx),
@@ -262,7 +265,6 @@ impl DapClient {
         // Retry TCP connection with exponential backoff
         // Handles adapters that need time to start listening (e.g., js-debug)
         let stream = {
-            let mut last_error = None;
             let mut delay = Duration::from_millis(100);
             let max_delay = Duration::from_millis(1000);
             let timeout_duration = Duration::from_secs(10);
@@ -272,12 +274,11 @@ impl DapClient {
                 match TcpStream::connect(&addr).await {
                     Ok(s) => break s,
                     Err(e) => {
-                        last_error = Some(e);
                         if start.elapsed() >= timeout_duration {
                             let _ = adapter.start_kill();
                             return Err(Error::AdapterStartFailed(format!(
                                 "Failed to connect to adapter at {} after {:?}: {}",
-                                addr, timeout_duration, last_error.unwrap()
+                                addr, timeout_duration, e
                             )));
                         }
                         tokio::time::sleep(delay).await;
@@ -306,6 +307,7 @@ impl DapClient {
             writer: DapWriter::Tcp(BufWriter::new(write_half)),
             seq: AtomicI64::new(1),
             capabilities: Capabilities::default(),
+            request_timeout: Duration::from_secs(30),
             pending,
             event_tx,
             event_rx: Some(event_rx),
@@ -483,12 +485,19 @@ impl DapClient {
         self.event_rx.take()
     }
 
+    /// Set the timeout used by normal DAP requests after initialization.
+    pub fn set_request_timeout(&mut self, timeout: Duration) {
+        self.request_timeout = timeout;
+    }
+
     /// Get the next sequence number
     fn next_seq(&self) -> i64 {
         self.seq.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Send a request and return its sequence number
+    /// Send a request without waiting for its response and return its sequence
+    /// number. The response is still registered so adapters that defer it do
+    /// not produce a spurious "unknown request" warning.
     async fn send_request(&mut self, command: &str, arguments: Option<Value>) -> Result<i64> {
         let seq = self.next_seq();
 
@@ -511,7 +520,20 @@ impl DapClient {
         let json = serde_json::to_string(&request)?;
         tracing::trace!("DAP >>> {}", json);
 
-        codec::write_message(&mut self.writer, &json).await?;
+        // Keep a receiver-less pending entry. `process_message` removes it
+        // when the adapter eventually responds; this is essential for launch,
+        // whose response may arrive only after configurationDone.
+        let (tx, _rx) = oneshot::channel();
+        {
+            let mut pending_guard = self.pending.lock().await;
+            pending_guard.insert(seq, tx);
+        }
+
+        if let Err(error) = codec::write_message(&mut self.writer, &json).await {
+            let mut pending_guard = self.pending.lock().await;
+            pending_guard.remove(&seq);
+            return Err(error);
+        }
 
         Ok(seq)
     }
@@ -522,7 +544,8 @@ impl DapClient {
         command: &str,
         arguments: Option<Value>,
     ) -> Result<T> {
-        self.request_with_timeout(command, arguments, Duration::from_secs(30)).await
+        self.request_with_timeout(command, arguments, self.request_timeout)
+            .await
     }
 
     /// Send a request and wait for the response with configurable timeout

@@ -11,19 +11,13 @@ use tokio::sync::mpsc;
 use crate::common::{config::{adapter_fallback_names, Config, TransportMode}, Error, Result};
 use crate::dap::{
     self, Breakpoint, Capabilities, DapClient, Event, FunctionBreakpoint, LaunchArguments,
-    AttachArguments, Scope, SourceBreakpoint, StackFrame, Thread, Variable,
+    AttachArguments, Scope, SourceBreakpoint, StackFrame, StoppedEventBody, Thread, Variable,
 };
 use crate::ipc::protocol::{BreakpointInfo, BreakpointLocation};
 
 /// Debug session state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
-    /// No active session
-    Idle,
-    /// DAP adapter starting
-    Initializing,
-    /// Setting initial breakpoints
-    Configuring,
     /// Program is running
     Running,
     /// Program has stopped (breakpoint, step, exception)
@@ -37,9 +31,6 @@ pub enum SessionState {
 impl std::fmt::Display for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Idle => write!(f, "idle"),
-            Self::Initializing => write!(f, "initializing"),
-            Self::Configuring => write!(f, "configuring"),
             Self::Running => write!(f, "running"),
             Self::Stopped => write!(f, "stopped"),
             Self::Exited => write!(f, "exited"),
@@ -66,7 +57,89 @@ struct StoredBreakpoint {
 pub struct OutputEvent {
     pub category: String,
     pub output: String,
-    pub timestamp: std::time::Instant,
+}
+
+/// Bounded, in-memory buffer for debuggee output.
+///
+/// The DAP reader can produce arbitrarily large output events, so the buffer
+/// enforces both an event-count and a byte-count limit. Keeping this logic
+/// separate from `DebugSession` makes its accounting independently testable.
+#[derive(Debug)]
+struct OutputBuffer {
+    events: VecDeque<OutputEvent>,
+    max_events: usize,
+    max_bytes: usize,
+    current_bytes: usize,
+}
+
+impl OutputBuffer {
+    fn new(max_events: usize, max_bytes: usize) -> Self {
+        Self {
+            events: VecDeque::new(),
+            max_events,
+            max_bytes,
+            current_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, category: &str, output: &str) {
+        if self.max_events == 0 || self.max_bytes == 0 {
+            return;
+        }
+
+        let output = truncate_utf8_to_bytes(output, self.max_bytes);
+        if output.is_empty() {
+            return;
+        }
+        let output_bytes = output.len();
+
+        while self.current_bytes + output_bytes > self.max_bytes && !self.events.is_empty() {
+            if let Some(removed) = self.events.pop_front() {
+                self.current_bytes = self.current_bytes.saturating_sub(removed.output.len());
+            }
+        }
+
+        while self.events.len() >= self.max_events && !self.events.is_empty() {
+            if let Some(removed) = self.events.pop_front() {
+                self.current_bytes = self.current_bytes.saturating_sub(removed.output.len());
+            }
+        }
+
+        self.events.push_back(OutputEvent {
+            category: category.to_string(),
+            output,
+        });
+        self.current_bytes += output_bytes;
+    }
+
+    fn take(&mut self, clear: bool) -> Vec<OutputEvent> {
+        let result = self.events.iter().cloned().collect();
+
+        if clear {
+            self.events.clear();
+            self.current_bytes = 0;
+        }
+
+        result
+    }
+}
+
+/// Return the longest valid UTF-8 prefix that fits within `max_bytes`.
+fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+
+    let mut end = 0;
+    for (start, character) in value.char_indices() {
+        let character_end = start + character.len_utf8();
+        if character_end > max_bytes {
+            break;
+        }
+        end = character_end;
+    }
+
+    value[..end].to_string()
 }
 
 /// Debug session managing a DAP connection
@@ -81,8 +154,6 @@ pub struct DebugSession {
     capabilities: Capabilities,
     /// Program being debugged
     program: PathBuf,
-    /// Program arguments
-    args: Vec<String>,
     /// Adapter name
     adapter_name: String,
     /// Whether we launched (vs attached)
@@ -101,6 +172,8 @@ pub struct DebugSession {
     stopped_thread: Option<i64>,
     /// Reason for last stop
     stopped_reason: Option<String>,
+    /// Full body of the last stopped event, cleared when execution resumes
+    last_stop: Option<StoppedEventBody>,
     /// Hit breakpoint IDs from last stop
     hit_breakpoints: Vec<u32>,
     /// Current frame index (0 = top of stack)
@@ -109,18 +182,10 @@ pub struct DebugSession {
     current_frame: Option<i64>,
     /// Cached stack frames for current stop
     cached_frames: Vec<StackFrame>,
-    /// Output buffer
-    output_buffer: VecDeque<OutputEvent>,
-    /// Maximum output buffer size
-    max_output_events: usize,
-    /// Maximum output buffer bytes
-    max_output_bytes: usize,
-    /// Current output buffer byte count
-    current_output_bytes: usize,
+    /// Bounded output buffer
+    output_buffer: OutputBuffer,
     /// Exit code if program exited
     exit_code: Option<i32>,
-    /// DAP request timeout
-    dap_request_timeout: std::time::Duration,
 }
 
 impl DebugSession {
@@ -165,6 +230,7 @@ impl DebugSession {
         // Initialize the adapter with timeout
         let init_timeout = std::time::Duration::from_secs(config.timeouts.dap_initialize_secs);
         let request_timeout = std::time::Duration::from_secs(config.timeouts.dap_request_secs);
+        client.set_request_timeout(request_timeout);
 
         // Initialize the adapter with timeout
         tracing::debug!(timeout_secs = init_timeout.as_secs(), "Sending DAP initialize request");
@@ -225,17 +291,12 @@ impl DebugSession {
             "Sending DAP launch request"
         );
         
-        // For Python/debugpy, we need to use non-blocking launch because debugpy
-        // doesn't respond to launch until after configurationDone is sent.
-        // We send launch, wait for initialized, send configurationDone, then
-        // the launch response arrives.
-        if is_python {
-            client.launch_no_wait(launch_args).await?;
-            tracing::debug!("DAP launch request sent (no-wait mode for Python)");
-        } else {
-            client.launch(launch_args).await?;
-            tracing::debug!("DAP launch request successful");
-        }
+        // The DAP protocol permits adapters to defer the launch response until
+        // after configurationDone. GDB and debugpy both do so, while other
+        // adapters may respond immediately. Waiting here deadlocks the former
+        // before we can send their initial breakpoints and configurationDone.
+        client.launch_no_wait(launch_args).await?;
+        tracing::debug!("DAP launch request sent (deferred-response mode)");
 
         // Wait for initialized event (comes after launch per DAP spec)
         tracing::debug!(timeout_secs = request_timeout.as_secs(), "Waiting for DAP initialized event");
@@ -244,71 +305,93 @@ impl DebugSession {
 
         // Set initial breakpoints before configurationDone
         // This is required for adapters that don't support stopOnEntry (e.g., cdt-gdb-adapter)
-        let has_initial_breakpoints = !initial_breakpoints.is_empty();
-        if has_initial_breakpoints {
+        let mut source_breakpoints = HashMap::new();
+        let mut function_breakpoints = Vec::new();
+        let mut next_bp_id = 1;
+
+        if !initial_breakpoints.is_empty() {
             tracing::debug!(count = initial_breakpoints.len(), "Setting initial breakpoints");
 
             // Group breakpoints by type (source vs function)
-            let mut source_bps: std::collections::HashMap<PathBuf, Vec<dap::SourceBreakpoint>> = std::collections::HashMap::new();
+            let mut source_bps: HashMap<PathBuf, Vec<dap::SourceBreakpoint>> = HashMap::new();
             let mut function_bps: Vec<dap::FunctionBreakpoint> = Vec::new();
 
             for bp_str in &initial_breakpoints {
-                match BreakpointLocation::parse(bp_str) {
-                    Ok(BreakpointLocation::Line { file, line }) => {
-                        source_bps.entry(file).or_default().push(dap::SourceBreakpoint {
-                            line,
-                            column: None,
-                            condition: None,
-                            hit_condition: None,
-                            log_message: None,
-                        });
+                let location = BreakpointLocation::parse(bp_str)?;
+                let bp_id = next_bp_id;
+                next_bp_id += 1;
+
+                match &location {
+                    BreakpointLocation::Line { file, line } => {
+                        source_bps
+                            .entry(file.clone())
+                            .or_default()
+                            .push(dap::SourceBreakpoint {
+                                line: *line,
+                                column: None,
+                                condition: None,
+                                hit_condition: None,
+                                log_message: None,
+                            });
+                        source_breakpoints
+                            .entry(file.clone())
+                            .or_insert_with(Vec::new)
+                            .push(StoredBreakpoint {
+                                id: bp_id,
+                                location,
+                                condition: None,
+                                hit_count: None,
+                                enabled: true,
+                                verified: false,
+                                actual_line: None,
+                                message: None,
+                            });
                     }
-                    Ok(BreakpointLocation::Function { name }) => {
+                    BreakpointLocation::Function { name } => {
                         function_bps.push(dap::FunctionBreakpoint {
-                            name,
+                            name: name.clone(),
                             condition: None,
                             hit_condition: None,
                         });
-                    }
-                    Err(e) => {
-                        tracing::warn!(breakpoint = %bp_str, error = %e, "Failed to parse initial breakpoint");
+                        function_breakpoints.push(StoredBreakpoint {
+                            id: bp_id,
+                            location,
+                            condition: None,
+                            hit_count: None,
+                            enabled: true,
+                            verified: false,
+                            actual_line: None,
+                            message: None,
+                        });
                     }
                 }
             }
 
             // Set source breakpoints
             for (file, bps) in source_bps {
-                match client.set_breakpoints(&file, bps).await {
-                    Ok(results) => {
-                        for bp in results {
-                            tracing::debug!(
-                                verified = bp.verified,
-                                line = bp.line,
-                                "Initial source breakpoint set"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(file = %file.display(), error = %e, "Failed to set initial breakpoints");
+                let results = client.set_breakpoints(&file, bps).await?;
+                if let Some(stored_bps) = source_breakpoints.get_mut(&file) {
+                    for (stored, result) in stored_bps.iter_mut().zip(results.iter()) {
+                        stored.verified = result.verified;
+                        stored.actual_line = result.line;
+                        stored.message = result.message.clone();
                     }
                 }
             }
 
             // Set function breakpoints
             if !function_bps.is_empty() {
-                match client.set_function_breakpoints(function_bps).await {
-                    Ok(results) => {
-                        for bp in results {
-                            tracing::debug!(
-                                verified = bp.verified,
-                                line = bp.line,
-                                "Initial function breakpoint set"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to set initial function breakpoints");
-                    }
+                if !capabilities.supports_function_breakpoints {
+                    return Err(Error::Internal(
+                        "Debug adapter does not support function breakpoints. Use file:line format instead."
+                            .to_string(),
+                    ));
+                }
+                let results = client.set_function_breakpoints(function_bps).await?;
+                for (stored, result) in function_breakpoints.iter_mut().zip(results.iter()) {
+                    stored.verified = result.verified;
+                    stored.actual_line = result.line;
+                    stored.message = result.message.clone();
                 }
             }
         }
@@ -337,26 +420,25 @@ impl DebugSession {
             state: initial_state,
             capabilities,
             program: program.to_path_buf(),
-            args,
             adapter_name,
             launched: true,
-            source_breakpoints: HashMap::new(),
-            function_breakpoints: Vec::new(),
-            next_bp_id: 1,
+            source_breakpoints,
+            function_breakpoints,
+            next_bp_id,
             threads: Vec::new(),
             selected_thread: None,
             stopped_thread: None,
             stopped_reason: None,
+            last_stop: None,
             hit_breakpoints: Vec::new(),
             current_frame_index: 0,
             current_frame: None,
             cached_frames: Vec::new(),
-            output_buffer: VecDeque::new(),
-            max_output_events: config.output.max_events,
-            max_output_bytes: config.output.max_bytes_mb * 1024 * 1024,
-            current_output_bytes: 0,
+            output_buffer: OutputBuffer::new(
+                config.output.max_events,
+                config.output.max_bytes_mb * 1024 * 1024,
+            ),
             exit_code: None,
-            dap_request_timeout: request_timeout,
         })
     }
 
@@ -392,6 +474,7 @@ impl DebugSession {
         // Get configured timeouts
         let init_timeout = std::time::Duration::from_secs(config.timeouts.dap_initialize_secs);
         let request_timeout = std::time::Duration::from_secs(config.timeouts.dap_request_secs);
+        client.set_request_timeout(request_timeout);
 
         let capabilities = client.initialize_with_timeout(&adapter_name, init_timeout).await?;
 
@@ -420,7 +503,6 @@ impl DebugSession {
             state: SessionState::Stopped, // Attached processes start stopped
             capabilities,
             program: PathBuf::from(format!("pid:{}", pid)),
-            args: Vec::new(),
             adapter_name,
             launched: false,
             source_breakpoints: HashMap::new(),
@@ -430,22 +512,27 @@ impl DebugSession {
             selected_thread: None,
             stopped_thread: None,
             stopped_reason: Some("attach".to_string()),
+            last_stop: None,
             hit_breakpoints: Vec::new(),
             current_frame_index: 0,
             current_frame: None,
             cached_frames: Vec::new(),
-            output_buffer: VecDeque::new(),
-            max_output_events: config.output.max_events,
-            max_output_bytes: config.output.max_bytes_mb * 1024 * 1024,
-            current_output_bytes: 0,
+            output_buffer: OutputBuffer::new(
+                config.output.max_events,
+                config.output.max_bytes_mb * 1024 * 1024,
+            ),
             exit_code: None,
-            dap_request_timeout: request_timeout,
         })
     }
 
     /// Get current state
     pub fn state(&self) -> SessionState {
         self.state
+    }
+
+    /// Full body of the last stopped event, if the program is stopped
+    pub fn last_stop(&self) -> Option<&StoppedEventBody> {
+        self.last_stop.as_ref()
     }
 
     /// Get program path
@@ -499,7 +586,9 @@ impl DebugSession {
             Event::Stopped(body) => {
                 self.state = SessionState::Stopped;
                 self.stopped_thread = body.thread_id;
+                self.selected_thread = body.thread_id;
                 self.stopped_reason = Some(body.reason.clone());
+                self.last_stop = Some(body.clone());
                 self.hit_breakpoints = body.hit_breakpoint_ids.clone();
                 // Reset frame tracking on stop - user starts at top of stack
                 self.current_frame = None;
@@ -509,8 +598,10 @@ impl DebugSession {
             }
             Event::Continued { thread_id, .. } => {
                 self.state = SessionState::Running;
+                self.selected_thread = None;
                 self.stopped_thread = None;
                 self.stopped_reason = None;
+                self.last_stop = None;
                 self.hit_breakpoints.clear();
                 self.current_frame = None;
                 self.current_frame_index = 0;
@@ -519,11 +610,13 @@ impl DebugSession {
             }
             Event::Exited(body) => {
                 self.state = SessionState::Exited;
+                self.selected_thread = None;
                 self.exit_code = Some(body.exit_code);
                 tracing::info!("Program exited with code {}", body.exit_code);
             }
             Event::Terminated(_) => {
                 self.state = SessionState::Exited;
+                self.selected_thread = None;
                 tracing::info!("Session terminated");
             }
             Event::Output(body) => {
@@ -545,7 +638,7 @@ impl DebugSession {
                 tracing::debug!("Breakpoint {}: {:?}", reason, breakpoint);
                 // Update breakpoint status if we get change notifications
                 if let Some(bp_id) = breakpoint.id {
-                    self.update_breakpoint_from_event(bp_id as u32, breakpoint);
+                    self.update_breakpoint_from_event(bp_id, breakpoint);
                 }
             }
             _ => {}
@@ -574,92 +667,9 @@ impl DebugSession {
         }
     }
 
-    /// Buffer output for later retrieval
-    ///
-    /// Enforces both max_output_events and max_output_bytes limits.
-    /// If a single output message exceeds max_output_bytes, it is truncated.
+    /// Buffer output for later retrieval.
     fn buffer_output(&mut self, category: &str, output: &str) {
-        // Truncate oversized messages to prevent exceeding limits
-        let output = if output.len() > self.max_output_bytes {
-            tracing::warn!(
-                "Output message ({} bytes) exceeds max buffer size ({} bytes), truncating",
-                output.len(),
-                self.max_output_bytes
-            );
-            // Truncate to fit, trying to break at a char boundary
-            let truncated: String = output.chars().take(self.max_output_bytes).collect();
-            truncated
-        } else {
-            output.to_string()
-        };
-
-        let output_bytes = output.len();
-
-        // Enforce byte limit - remove oldest entries until we have space
-        while self.current_output_bytes + output_bytes > self.max_output_bytes
-            && !self.output_buffer.is_empty()
-        {
-            if let Some(removed) = self.output_buffer.pop_front() {
-                self.current_output_bytes = self.current_output_bytes.saturating_sub(removed.output.len());
-            }
-        }
-
-        // Enforce event count limit
-        while self.output_buffer.len() >= self.max_output_events && !self.output_buffer.is_empty() {
-            if let Some(removed) = self.output_buffer.pop_front() {
-                self.current_output_bytes = self.current_output_bytes.saturating_sub(removed.output.len());
-            }
-        }
-
-        // Add the new output
-        self.output_buffer.push_back(OutputEvent {
-            category: category.to_string(),
-            output,
-            timestamp: std::time::Instant::now(),
-        });
-        self.current_output_bytes += output_bytes;
-    }
-
-    /// Wait for the program to stop
-    ///
-    /// This method waits for a stop event (Stopped, Exited, or Terminated) to arrive
-    /// through the event channel. Since the background reader task in DapClient
-    /// continuously reads events from the adapter, we just need to wait on the channel.
-    pub async fn wait_stopped(&mut self, timeout_secs: u64) -> Result<Event> {
-        let timeout = std::time::Duration::from_secs(timeout_secs);
-        let deadline = tokio::time::Instant::now() + timeout;
-
-        loop {
-            // Calculate remaining time
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::AwaitTimeout(timeout_secs));
-            }
-
-            // Wait for next event with timeout
-            match tokio::time::timeout(remaining, self.events_rx.recv()).await {
-                Ok(Some(event)) => {
-                    self.handle_event(&event);
-
-                    match &event {
-                        Event::Stopped(_) | Event::Exited(_) | Event::Terminated(_) => {
-                            return Ok(event);
-                        }
-                        _ => {
-                            // Continue waiting for stop event
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Channel closed - adapter crashed or terminated
-                    return Err(Error::AdapterCrashed);
-                }
-                Err(_) => {
-                    // Timeout elapsed
-                    return Err(Error::AwaitTimeout(timeout_secs));
-                }
-            }
-        }
+        self.output_buffer.push(category, output);
     }
 
     /// Add a breakpoint
@@ -686,12 +696,22 @@ impl DebugSession {
                     message: None,
                 };
 
-                let entry = self.source_breakpoints.entry(file.clone()).or_default();
-                entry.push(stored);
+                self.source_breakpoints
+                    .entry(file.clone())
+                    .or_default()
+                    .push(stored);
 
                 // Send to adapter
                 let source_bps = self.collect_source_breakpoints(file);
-                let results = self.client.set_breakpoints(file, source_bps).await?;
+                let results = match self.client.set_breakpoints(file, source_bps).await {
+                    Ok(results) => results,
+                    Err(error) => {
+                        if let Some(breakpoints) = self.source_breakpoints.get_mut(file) {
+                            breakpoints.retain(|breakpoint| breakpoint.id != bp_id);
+                        }
+                        return Err(error);
+                    }
+                };
 
                 // Update verification status
                 self.update_source_breakpoint_status(file, &results);
@@ -716,7 +736,14 @@ impl DebugSession {
 
                 // Send all function breakpoints
                 let func_bps = self.collect_function_breakpoints();
-                let results = self.client.set_function_breakpoints(func_bps).await?;
+                let results = match self.client.set_function_breakpoints(func_bps).await {
+                    Ok(results) => results,
+                    Err(error) => {
+                        self.function_breakpoints
+                            .retain(|breakpoint| breakpoint.id != bp_id);
+                        return Err(error);
+                    }
+                };
 
                 // Update verification status
                 self.update_function_breakpoint_status(&results);
@@ -836,26 +863,33 @@ impl DebugSession {
     /// Remove a breakpoint by ID
     pub async fn remove_breakpoint(&mut self, id: u32) -> Result<()> {
         // Find and remove from source breakpoints
-        let mut file_to_update = None;
+        let mut source_breakpoint = None;
         for (file, bps) in &mut self.source_breakpoints {
             if let Some(pos) = bps.iter().position(|bp| bp.id == id) {
-                bps.remove(pos);
-                file_to_update = Some(file.clone());
+                source_breakpoint = Some((file.clone(), pos, bps.remove(pos)));
                 break;
             }
         }
 
-        if let Some(file) = file_to_update {
+        if let Some((file, position, removed)) = source_breakpoint {
             let source_bps = self.collect_source_breakpoints(&file);
-            self.client.set_breakpoints(&file, source_bps).await?;
+            if let Err(error) = self.client.set_breakpoints(&file, source_bps).await {
+                if let Some(breakpoints) = self.source_breakpoints.get_mut(&file) {
+                    breakpoints.insert(position, removed);
+                }
+                return Err(error);
+            }
             return Ok(());
         }
 
         // Try function breakpoints
         if let Some(pos) = self.function_breakpoints.iter().position(|bp| bp.id == id) {
-            self.function_breakpoints.remove(pos);
+            let removed = self.function_breakpoints.remove(pos);
             let func_bps = self.collect_function_breakpoints();
-            self.client.set_function_breakpoints(func_bps).await?;
+            if let Err(error) = self.client.set_function_breakpoints(func_bps).await {
+                self.function_breakpoints.insert(pos, removed);
+                return Err(error);
+            }
             return Ok(());
         }
 
@@ -868,8 +902,8 @@ impl DebugSession {
         let files: Vec<_> = self.source_breakpoints.keys().cloned().collect();
         for file in files {
             self.client.set_breakpoints(&file, vec![]).await?;
+            self.source_breakpoints.remove(&file);
         }
-        self.source_breakpoints.clear();
 
         // Clear function breakpoints
         self.client.set_function_breakpoints(vec![]).await?;
@@ -930,8 +964,13 @@ impl DebugSession {
         let thread_id = self.get_thread_id().await?;
         self.client.continue_execution(thread_id).await?;
         self.state = SessionState::Running;
+        self.selected_thread = None;
         self.stopped_thread = None;
         self.stopped_reason = None;
+        self.last_stop = None;
+        self.current_frame = None;
+        self.current_frame_index = 0;
+        self.cached_frames.clear();
 
         Ok(())
     }
@@ -946,6 +985,13 @@ impl DebugSession {
         let thread_id = self.get_thread_id().await?;
         self.client.next(thread_id).await?;
         self.state = SessionState::Running;
+        self.selected_thread = None;
+        self.stopped_thread = None;
+        self.stopped_reason = None;
+        self.last_stop = None;
+        self.current_frame = None;
+        self.current_frame_index = 0;
+        self.cached_frames.clear();
 
         Ok(())
     }
@@ -960,6 +1006,13 @@ impl DebugSession {
         let thread_id = self.get_thread_id().await?;
         self.client.step_in(thread_id).await?;
         self.state = SessionState::Running;
+        self.selected_thread = None;
+        self.stopped_thread = None;
+        self.stopped_reason = None;
+        self.last_stop = None;
+        self.current_frame = None;
+        self.current_frame_index = 0;
+        self.cached_frames.clear();
 
         Ok(())
     }
@@ -974,6 +1027,13 @@ impl DebugSession {
         let thread_id = self.get_thread_id().await?;
         self.client.step_out(thread_id).await?;
         self.state = SessionState::Running;
+        self.selected_thread = None;
+        self.stopped_thread = None;
+        self.stopped_reason = None;
+        self.last_stop = None;
+        self.current_frame = None;
+        self.current_frame_index = 0;
+        self.cached_frames.clear();
 
         Ok(())
     }
@@ -991,18 +1051,18 @@ impl DebugSession {
     }
 
     /// Get stack trace
-    pub async fn stack_trace(&mut self, limit: usize) -> Result<Vec<StackFrame>> {
+    pub async fn stack_trace(
+        &mut self,
+        requested_thread: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<StackFrame>> {
         self.ensure_stopped()?;
 
-        let thread_id = self.get_thread_id().await?;
-        let frames = self.client.stack_trace(thread_id, limit as i64).await?;
-
-        // Cache the top frame ID
-        if let Some(frame) = frames.first() {
-            self.current_frame = Some(frame.id);
-        }
-
-        Ok(frames)
+        let thread_id = match requested_thread {
+            Some(thread_id) => thread_id,
+            None => self.get_thread_id().await?,
+        };
+        self.client.stack_trace(thread_id, limit as i64).await
     }
 
     /// Get threads
@@ -1084,18 +1144,8 @@ impl DebugSession {
     }
 
     /// Get buffered output
-    pub fn get_output(&mut self, tail: Option<usize>, clear: bool) -> Vec<OutputEvent> {
-        let result: Vec<OutputEvent> = if let Some(n) = tail {
-            self.output_buffer.iter().rev().take(n).cloned().rev().collect()
-        } else {
-            self.output_buffer.iter().cloned().collect()
-        };
-
-        if clear {
-            self.output_buffer.clear();
-        }
-
-        result
+    pub fn get_output(&mut self, clear: bool) -> Vec<OutputEvent> {
+        self.output_buffer.take(clear)
     }
 
     /// Detach from the debuggee (keep it running)
@@ -1132,10 +1182,9 @@ impl DebugSession {
 
     /// Select a thread for debugging operations
     ///
-    /// Returns an error if the thread is not found in the current thread list.
-    /// Note: The thread list may be stale; call `get_threads()` first to refresh.
-    pub fn select_thread(&mut self, thread_id: i64) -> Result<()> {
-        // Verify thread exists in our known thread list
+    /// Returns an error if the thread is not currently reported by the adapter.
+    pub async fn select_thread(&mut self, thread_id: i64) -> Result<()> {
+        self.threads = self.client.threads().await?;
         if !self.threads.iter().any(|t| t.id == thread_id) {
             return Err(Error::Internal(format!(
                 "Thread {} not found. Use 'threads' command to see available threads.",
@@ -1212,34 +1261,55 @@ impl DebugSession {
     /// Set breakpoint enabled state
     async fn set_breakpoint_enabled(&mut self, id: u32, enabled: bool) -> Result<()> {
         // Find and update the breakpoint
-        let mut file_to_update = None;
-        let mut is_function_bp = false;
+        let mut source_breakpoint = None;
 
         for (file, bps) in &mut self.source_breakpoints {
             if let Some(bp) = bps.iter_mut().find(|bp| bp.id == id) {
+                let previous_enabled = bp.enabled;
                 bp.enabled = enabled;
-                file_to_update = Some(file.clone());
+                source_breakpoint = Some((file.clone(), previous_enabled));
                 break;
             }
         }
 
-        if file_to_update.is_none() {
+        let mut function_previous_enabled = None;
+        if source_breakpoint.is_none() {
             if let Some(bp) = self.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
+                function_previous_enabled = Some(bp.enabled);
                 bp.enabled = enabled;
-                is_function_bp = true;
             } else {
                 return Err(Error::BreakpointNotFound { id });
             }
         }
 
         // Re-send breakpoints to adapter
-        if let Some(file) = file_to_update {
+        if let Some((file, previous_enabled)) = source_breakpoint {
             let source_bps = self.collect_source_breakpoints(&file);
-            let results = self.client.set_breakpoints(&file, source_bps).await?;
+            let results = match self.client.set_breakpoints(&file, source_bps).await {
+                Ok(results) => results,
+                Err(error) => {
+                    if let Some(bp) = self
+                        .source_breakpoints
+                        .get_mut(&file)
+                        .and_then(|breakpoints| breakpoints.iter_mut().find(|bp| bp.id == id))
+                    {
+                        bp.enabled = previous_enabled;
+                    }
+                    return Err(error);
+                }
+            };
             self.update_source_breakpoint_status(&file, &results);
-        } else if is_function_bp {
+        } else if let Some(previous_enabled) = function_previous_enabled {
             let func_bps = self.collect_function_breakpoints();
-            let results = self.client.set_function_breakpoints(func_bps).await?;
+            let results = match self.client.set_function_breakpoints(func_bps).await {
+                Ok(results) => results,
+                Err(error) => {
+                    if let Some(bp) = self.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
+                        bp.enabled = previous_enabled;
+                    }
+                    return Err(error);
+                }
+            };
             self.update_function_breakpoint_status(&results);
         }
 
@@ -1298,5 +1368,43 @@ impl DebugSession {
             .first()
             .map(|t| t.id)
             .ok_or_else(|| Error::Internal("No threads available".to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputBuffer;
+
+    #[test]
+    fn clearing_output_resets_byte_accounting() {
+        let mut buffer = OutputBuffer::new(4, 4);
+        buffer.push("stdout", "abcd");
+
+        let drained = buffer.take(true);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].output, "abcd");
+        assert_eq!(buffer.current_bytes, 0);
+
+        buffer.push("stdout", "xyz");
+        assert_eq!(buffer.current_bytes, 3);
+        assert_eq!(buffer.take(false)[0].output, "xyz");
+    }
+
+    #[test]
+    fn output_is_truncated_on_a_utf8_boundary() {
+        let mut buffer = OutputBuffer::new(4, 5);
+        buffer.push("stdout", "ééé");
+
+        let output = buffer.take(false);
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].output, "éé");
+        assert_eq!(buffer.current_bytes, 4);
+    }
+
+    #[test]
+    fn zero_sized_buffers_discard_output() {
+        let mut buffer = OutputBuffer::new(0, 32);
+        buffer.push("stdout", "discard me");
+        assert!(buffer.take(false).is_empty());
     }
 }

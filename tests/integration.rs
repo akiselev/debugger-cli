@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -92,27 +91,6 @@ impl TestContext {
         self.binaries.get(name).unwrap()
     }
 
-    /// Build a Rust fixture
-    fn build_rust_fixture(&mut self, name: &str) -> &PathBuf {
-        let source = self.fixtures_dir.join(format!("{}.rs", name));
-        let output = self.temp_dir.join(format!("{}_rs", name));
-
-        let status = Command::new("rustc")
-            .args([
-                "-g",           // Debug symbols
-                "-o",
-                output.to_str().unwrap(),
-                source.to_str().unwrap(),
-            ])
-            .status()
-            .expect("Failed to compile Rust fixture");
-
-        assert!(status.success(), "Rust compilation failed");
-
-        self.binaries.insert(format!("{}_rs", name), output.clone());
-        self.binaries.get(&format!("{}_rs", name)).unwrap()
-    }
-
     /// Find breakpoint line numbers from markers in source
     fn find_breakpoint_markers(&self, source: &Path) -> HashMap<String, u32> {
         let content = fs::read_to_string(source).expect("Failed to read source file");
@@ -121,7 +99,6 @@ impl TestContext {
         for (line_num, line) in content.lines().enumerate() {
             if let Some(marker_start) = line.find("BREAKPOINT_MARKER:") {
                 let marker_name = line[marker_start + "BREAKPOINT_MARKER:".len()..]
-                    .trim()
                     .split_whitespace()
                     .next()
                     .unwrap()
@@ -227,12 +204,20 @@ max_bytes_mb = 1
         fs::write(&config_path, config_content).expect("Failed to write config");
     }
 
-    /// Run a debugger command
-    fn run_debugger(&self, args: &[&str]) -> DebuggerOutput {
-        let output = Command::new(&self.debugger_bin)
+    /// Build a debugger command scoped to this test's daemon and configuration.
+    fn debugger_command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(&self.debugger_bin);
+        command
             .args(args)
             .env("XDG_CONFIG_HOME", &self.config_dir)
-            .env("XDG_RUNTIME_DIR", &self.runtime_dir)
+            .env("XDG_RUNTIME_DIR", &self.runtime_dir);
+        command
+    }
+
+    /// Run a debugger command.
+    fn run_debugger(&self, args: &[&str]) -> DebuggerOutput {
+        let output = self
+            .debugger_command(args)
             .output()
             .expect("Failed to run debugger");
 
@@ -240,7 +225,6 @@ max_bytes_mb = 1
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             success: output.status.success(),
-            code: output.status.code(),
         }
     }
 
@@ -289,7 +273,6 @@ struct DebuggerOutput {
     stdout: String,
     stderr: String,
     success: bool,
-    code: Option<i32>,
 }
 
 /// Find the debugger binary
@@ -528,7 +511,6 @@ fn test_basic_debugging_workflow_c() {
 }
 
 #[test]
-#[ignore = "GDB DAP mode has different stopOnEntry behavior than LLDB"]
 fn test_basic_debugging_workflow_c_gdb() {
     let gdb_path = match gdb_available() {
         Some(path) => path,
@@ -546,29 +528,61 @@ fn test_basic_debugging_workflow_c_gdb() {
 
     // Find breakpoint markers
     let markers = ctx.find_breakpoint_markers(&ctx.fixtures_dir.join("simple.c"));
-    let main_start_line = markers.get("main_start").expect("Missing main_start marker");
+    let add_body_line = markers.get("add_body").expect("Missing add_body marker");
 
     // Cleanup any existing daemon
     ctx.cleanup_daemon();
 
-    // Start debugging
-    let output = ctx.run_debugger_ok(&[
-        "start",
-        binary.to_str().unwrap(),
-        "--stop-on-entry",
-    ]);
+    // GDB's DAP launch response arrives only after configurationDone, so this
+    // specifically exercises a breakpoint configured during startup.
+    let breakpoint = format!("simple.c:{}", add_body_line);
+    let output = ctx.run_debugger_ok(&["start", binary.to_str().unwrap(), "--break", &breakpoint]);
     assert!(output.contains("Started debugging") || output.contains("Stopped"));
 
-    // Set a breakpoint
-    let bp_location = format!("simple.c:{}", main_start_line);
-    let output = ctx.run_debugger_ok(&["break", &bp_location]);
-    assert!(output.contains("Breakpoint") || output.contains("breakpoint"));
+    let output = ctx.run_debugger_ok(&["breakpoint", "list"]);
+    assert!(
+        output.contains("simple.c"),
+        "Initial breakpoint should be tracked: {}",
+        output
+    );
 
-    // Continue execution
-    let output = ctx.run_debugger_ok(&["continue"]);
-    assert!(output.contains("Continuing") || output.contains("running"));
+    // A follower polls over short-lived connections. Verify it does not hold
+    // the daemon hostage while another client asks for status.
+    let mut follower = ctx
+        .debugger_command(&["output", "--follow"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to start output follower");
+    std::thread::sleep(Duration::from_millis(300));
 
-    // Wait for breakpoint hit
+    let mut status = ctx
+        .debugger_command(&["status"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start status command");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while status.try_wait().expect("Failed to poll status command").is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = status.kill();
+            let _ = follower.kill();
+            panic!("output --follow blocked another daemon client");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let status_output = status
+        .wait_with_output()
+        .expect("Failed to collect status output");
+    assert!(
+        status_output.status.success(),
+        "Status failed while following output: {}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let _ = follower.kill();
+    let _ = follower.wait();
+
+    // Wait for the initial breakpoint to be hit.
     let output = ctx.run_debugger_ok(&["await", "--timeout", "30"]);
     assert!(
         output.contains("Stopped") || output.contains("breakpoint"),
@@ -576,11 +590,35 @@ fn test_basic_debugging_workflow_c_gdb() {
         output
     );
 
-    // Get local variables
+    // Get local variables and evaluate in the selected frame.
     let output = ctx.run_debugger_ok(&["locals"]);
     assert!(
         output.contains("x") || output.contains("Local"),
         "Expected locals output: {}",
+        output
+    );
+
+    let output = ctx.run_debugger_ok(&["print", "a + b"]);
+    assert!(output.contains("30"), "Expected a+b=30: {}", output);
+
+    // Context must honor the frame selected by `up`; this used to be reset to
+    // frame 0 by a stack-trace request.
+    let output = ctx.run_debugger_ok(&["up"]);
+    assert!(output.contains("main"), "Expected caller frame: {}", output);
+    let output = ctx.run_debugger_ok(&["context", "--lines", "2"]);
+    assert!(output.contains("function: main") || output.contains("In function: main"));
+    ctx.run_debugger_ok(&["down"]);
+
+    // Finish the program and verify that buffered debuggee output is available.
+    ctx.run_debugger_ok(&["continue"]);
+    let output = ctx.run_debugger_ok(&["await", "--timeout", "30"]);
+    assert!(output.contains("exited") || output.contains("terminated"));
+    let output = ctx.run_debugger_ok(&["output"]);
+    assert!(output.contains("Sum: 30"), "Expected program output: {}", output);
+    let output = ctx.run_debugger_ok(&["output", "--tail", "1"]);
+    assert!(
+        output.contains("Factorial: 120") && !output.contains("Sum: 30"),
+        "Expected line-based output tail: {}",
         output
     );
 
@@ -716,7 +754,9 @@ fn test_multiple_breakpoints_c() {
 
     // Set multiple breakpoints
     for marker in ["main_start", "before_add", "before_factorial"] {
-        let line = markers.get(marker).expect(&format!("Missing {} marker", marker));
+        let line = markers
+            .get(marker)
+            .unwrap_or_else(|| panic!("Missing {} marker", marker));
         let bp_location = format!("simple.c:{}", line);
         ctx.run_debugger_ok(&["break", &bp_location]);
     }
@@ -1172,6 +1212,89 @@ fn test_expression_evaluation_js() {
 
     let output = ctx.run_debugger_ok(&["print", "x + y"]);
     assert!(output.contains("30"), "Expected x+y=30: {}", output);
+
+    ctx.run_debugger(&["stop"]);
+}
+
+#[test]
+fn test_await_does_not_block_other_clients_gdb() {
+    let gdb_path = match gdb_available() {
+        Some(path) => path,
+        None => {
+            eprintln!("Skipping test: GDB ≥14.1 not available");
+            return;
+        }
+    };
+
+    let mut ctx = TestContext::new("await_concurrent_gdb");
+    ctx.create_config_with_args("gdb", gdb_path.to_str().unwrap(), &["-i=dap"]);
+
+    // Long-running fixture keeps the program running while await blocks.
+    let binary = ctx.build_c_fixture("attach_target").clone();
+
+    ctx.cleanup_daemon();
+
+    let output = ctx.run_debugger_ok(&["start", binary.to_str().unwrap()]);
+    assert!(output.contains("Started debugging") || output.contains("running"));
+
+    // Block one client in await, then pause from a second client. Before the
+    // session actor, the awaiting connection owned the daemon, so pause could
+    // not even be received until await timed out.
+    let mut awaiter = ctx
+        .debugger_command(&["await", "--timeout", "20"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start await command");
+    std::thread::sleep(Duration::from_millis(500));
+
+    let mut pause = ctx
+        .debugger_command(&["pause"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start pause command");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while pause.try_wait().expect("Failed to poll pause command").is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = pause.kill();
+            let _ = awaiter.kill();
+            panic!("pause blocked behind an in-flight await");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let pause_output = pause
+        .wait_with_output()
+        .expect("Failed to collect pause output");
+    assert!(
+        pause_output.status.success(),
+        "Pause failed while another client awaited: {}",
+        String::from_utf8_lossy(&pause_output.stderr)
+    );
+
+    // The pause must wake the awaiting client with a stop, well before its
+    // 20-second timeout.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while awaiter.try_wait().expect("Failed to poll await command").is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = awaiter.kill();
+            panic!("await did not observe the pause-induced stop");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let await_output = awaiter
+        .wait_with_output()
+        .expect("Failed to collect await output");
+    // Finishing within the deadline already proves await saw the stop rather
+    // than its own 20-second timeout; the stop reason wording varies by GDB
+    // version, so only require a successful, non-empty report.
+    let stdout = String::from_utf8_lossy(&await_output.stdout);
+    assert!(
+        await_output.status.success() && !stdout.trim().is_empty(),
+        "Expected await to report a stop: stdout={} stderr={}",
+        stdout,
+        String::from_utf8_lossy(&await_output.stderr)
+    );
 
     ctx.run_debugger(&["stop"]);
 }

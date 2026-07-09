@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The daemon now handles client connections concurrently. A session actor owns
+  the debug session and serializes DAP requests, while `await` waits on state
+  snapshots — so `pause`, `status`, and other commands from a second terminal
+  work while another client is blocked in `await`. DAP events are reduced on a
+  100ms tick instead of a 1-second tick that paused while a client was
+  connected.
+- `output --follow` keeps one connection open instead of reconnecting for each
+  poll, which is safe now that connections no longer block each other.
+
+### Added
+
+- A non-ignored native GDB DAP integration test for startup breakpoints,
+  selected-frame context, expression evaluation, output capture, and output
+  tailing when GDB 14.1+ is available.
+- GitHub Actions coverage for the Rust test suite and Clippy.
+- `break --hit-count <n>` parity with `breakpoint add --hit-count <n>`.
+
+### Fixed
+
+- DAP launch sequencing for adapters that defer their `launch` response until
+  after `configurationDone`, including native GDB and debugpy.
+- `output --follow`, output clearing byte accounting, UTF-8-safe buffer limits,
+  and line-based `output --tail` behavior.
+- Selected frames are preserved by `context`, and thread selection refreshes
+  adapter threads before accepting an ID.
+- Initial breakpoints are tracked for later list/remove/enable operations;
+  breakpoint state rolls back if an adapter request fails.
+
 ## [0.1.1] - 2026-01-25
 
 ### Added

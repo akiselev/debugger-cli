@@ -103,6 +103,10 @@ pub struct CommandExpectation {
     pub success: Option<bool>,
     /// Substring that should be in the output
     pub output_contains: Option<String>,
+    /// Permit either command outcome. Unlike `success: false`, this does not
+    /// require a failure and is intended only for documented adapter variance.
+    #[serde(default)]
+    pub allow_failure: bool,
 }
 
 /// Expectations for a stop event

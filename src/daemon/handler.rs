@@ -5,32 +5,12 @@
 use serde_json::json;
 
 use crate::common::{config::Config, error::IpcError, Error, Result};
-use crate::dap::{Event, StackFrame};
 use crate::ipc::protocol::{
     BreakpointLocation, Command, ContextResult, EvaluateContext, EvaluateResult, Response,
-    SourceLine, StackFrameInfo, StatusResult, StopResult, ThreadInfo, VariableInfo,
+    SourceLine, StackFrameInfo, StatusResult, ThreadInfo, VariableInfo,
 };
 
-use super::session::{DebugSession, SessionState};
-
-/// Extract source location info (filename, line, column) from the top stack frame
-fn extract_source_location(frames: &[StackFrame]) -> (Option<String>, Option<u32>, Option<u32>) {
-    if frames.is_empty() {
-        return (None, None, None);
-    }
-    
-    let frame = &frames[0];
-    let source_path = frame.source.as_ref().and_then(|s| s.path.clone());
-    // Extract just the filename from the path
-    let source_name = source_path.as_ref().map(|p| {
-        std::path::Path::new(p)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(p)
-            .to_string()
-    });
-    (source_name, Some(frame.line as u32), Some(frame.column as u32))
-}
+use super::session::DebugSession;
 
 /// Handle an IPC command
 pub async fn handle_command(
@@ -126,6 +106,7 @@ async fn handle_command_inner(
                     state: Some(sess.state().to_string()),
                     program: Some(sess.program().display().to_string()),
                     adapter: Some(sess.adapter_name().to_string()),
+                    selected_thread: sess.get_selected_thread(),
                     stopped_thread: sess.stopped_thread(),
                     stopped_reason: sess.stopped_reason().map(String::from),
                 }
@@ -136,6 +117,7 @@ async fn handle_command_inner(
                     state: None,
                     program: None,
                     adapter: None,
+                    selected_thread: None,
                     stopped_thread: None,
                     stopped_reason: None,
                 }
@@ -153,12 +135,13 @@ async fn handle_command_inner(
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
 
             // Check capabilities before using advanced features
-            if matches!(location, BreakpointLocation::Function { .. }) {
-                if !sess.supports_function_breakpoints() {
-                    return Err(Error::Internal(
-                        "Debug adapter does not support function breakpoints. Use file:line format instead.".to_string()
-                    ));
-                }
+            if matches!(location, BreakpointLocation::Function { .. })
+                && !sess.supports_function_breakpoints()
+            {
+                return Err(Error::Internal(
+                    "Debug adapter does not support function breakpoints. Use file:line format instead."
+                        .to_string(),
+                ));
             }
 
             if condition.is_some() && !sess.supports_conditional_breakpoints() {
@@ -243,9 +226,9 @@ async fn handle_command_inner(
         }
 
         // === State Inspection ===
-        Command::StackTrace { thread_id: _, limit } => {
+        Command::StackTrace { thread_id, limit } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
-            let frames = sess.stack_trace(limit).await?;
+            let frames = sess.stack_trace(thread_id, limit).await?;
 
             let frame_infos: Vec<StackFrameInfo> = frames
                 .iter()
@@ -340,7 +323,7 @@ async fn handle_command_inner(
 
         Command::ThreadSelect { id } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
-            sess.select_thread(id)?;
+            sess.select_thread(id).await?;
             Ok(json!({ "selected": id }))
         }
 
@@ -368,11 +351,9 @@ async fn handle_command_inner(
         Command::Context { lines } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
 
-            // Get stack trace to find current position
-            let frames = sess.stack_trace(1).await?;
-            let frame = frames.first().ok_or_else(|| {
-                Error::Internal("No stack frame available".to_string())
-            })?;
+            // Preserve the frame selected by `frame`, `up`, or `down`.
+            let frame_index = sess.get_current_frame_index();
+            let frame = sess.select_frame(frame_index).await?;
 
             // Read source file
             let source_path = frame
@@ -409,92 +390,45 @@ async fn handle_command_inner(
         }
 
         // === Async ===
-        Command::Await { timeout_secs } => {
-            let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
-
-            // Process any pending events
-            sess.process_events().await?;
-
-            // If we're already stopped, fetch stack trace and return stop info
-            if sess.state() == SessionState::Stopped {
-                // Fetch stack trace to get source location info
-                let (source, line, column) = match sess.stack_trace(1).await {
-                    Ok(ref frames) => extract_source_location(frames),
-                    Err(_) => (None, None, None),
-                };
-                
-                let result = StopResult {
-                    reason: sess.stopped_reason().unwrap_or("unknown").to_string(),
-                    description: None,
-                    thread_id: sess.stopped_thread(),
-                    all_threads_stopped: true,
-                    hit_breakpoint_ids: vec![],
-                    source,
-                    line,
-                    column,
-                };
-                return Ok(serde_json::to_value(result)?);
-            }
-
-            if sess.state() == SessionState::Exited {
-                return Ok(json!({
-                    "reason": "exited",
-                    "exit_code": sess.exit_code().unwrap_or(0)
-                }));
-            }
-
-            // Wait for stop event
-            let event = sess.wait_stopped(timeout_secs).await?;
-
-            match event {
-                Event::Stopped(body) => {
-                    // Fetch stack trace to get source location info
-                    let (source, line, column) = match sess.stack_trace(1).await {
-                        Ok(ref frames) => extract_source_location(frames),
-                        Err(_) => (None, None, None),
-                    };
-                    
-                    let result = StopResult {
-                        reason: body.reason,
-                        description: body.description,
-                        thread_id: body.thread_id,
-                        all_threads_stopped: body.all_threads_stopped,
-                        hit_breakpoint_ids: body.hit_breakpoint_ids,
-                        source,
-                        line,
-                        column,
-                    };
-                    Ok(serde_json::to_value(result)?)
-                }
-                Event::Exited(body) => Ok(json!({
-                    "reason": "exited",
-                    "exit_code": body.exit_code
-                })),
-                Event::Terminated(_) => Ok(json!({
-                    "reason": "terminated"
-                })),
-                _ => Ok(json!({
-                    "reason": "unknown"
-                })),
-            }
+        Command::Await { .. } => {
+            // Await is handled by the connection task in the server, which
+            // waits on state snapshots so it never occupies the session actor.
+            // Reaching this arm means a bug in command routing.
+            Err(Error::Internal(
+                "await must be handled by the daemon connection layer".to_string(),
+            ))
         }
 
         // === Output ===
         Command::GetOutput { tail, clear } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
-            let events = sess.get_output(tail, clear);
+            // Make output visible immediately instead of waiting for the daemon's
+            // periodic event-processing tick.
+            sess.process_events().await?;
+            // `--tail` is documented in lines, while the DAP emits arbitrary
+            // output chunks. Read the full bounded buffer first, then trim the
+            // concatenated stream by lines so chunk boundaries are invisible.
+            let events = sess.get_output(clear);
 
-            let output: String = events.iter().map(|e| e.output.as_str()).collect();
+            let all_output: String = events.iter().map(|e| e.output.as_str()).collect();
+            let output = tail
+                .map(|line_count| tail_output_lines(&all_output, line_count))
+                .unwrap_or(all_output);
+            let event_details: Vec<_> = events
+                .iter()
+                .map(|event| {
+                    json!({
+                        "category": event.category,
+                        "output": event.output,
+                    })
+                })
+                .collect();
 
             Ok(json!({
                 "output": output,
-                "count": events.len()
+                "count": events.len(),
+                "events": event_details,
             }))
-        }
-
-        Command::SubscribeOutput => {
-            // TODO: Implement output streaming
-            Err(Error::Internal("Output streaming not yet implemented".to_string()))
         }
 
         // === Shutdown ===
@@ -529,7 +463,12 @@ fn read_source_context(path: &str, current_line: u32, context: usize) -> Result<
     })?;
 
     let lines: Vec<&str> = content.lines().collect();
-    let current_idx = (current_line as usize).saturating_sub(1);
+    if lines.is_empty() {
+        return Ok(Vec::new());
+    }
+    let current_idx = (current_line as usize)
+        .saturating_sub(1)
+        .min(lines.len() - 1);
 
     let start = current_idx.saturating_sub(context);
     let end = (current_idx + context + 1).min(lines.len());
@@ -545,4 +484,42 @@ fn read_source_context(path: &str, current_line: u32, context: usize) -> Result<
     }
 
     Ok(result)
+}
+
+/// Return the last `line_count` lines while preserving a trailing newline.
+fn tail_output_lines(output: &str, line_count: usize) -> String {
+    if line_count == 0 || output.is_empty() {
+        return String::new();
+    }
+
+    let lines: Vec<_> = output.lines().collect();
+    let start = lines.len().saturating_sub(line_count);
+    let mut result = lines[start..].join("\n");
+    if output.ends_with('\n') && !result.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tail_output_lines;
+
+    #[test]
+    fn tail_output_is_line_based_across_dap_chunks() {
+        assert_eq!(tail_output_lines("first\nsecond\nthird\n", 2), "second\nthird\n");
+        assert_eq!(tail_output_lines("first\nsecond\n", 0), "");
+        assert_eq!(tail_output_lines("only", 3), "only");
+    }
+
+    #[test]
+    fn source_context_handles_adapter_lines_beyond_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("short.c");
+        std::fs::write(&source, "one\ntwo\n").unwrap();
+
+        let context = super::read_source_context(source.to_str().unwrap(), 99, 1).unwrap();
+        assert_eq!(context.len(), 2);
+        assert!(!context.iter().any(|line| line.is_current));
+    }
 }

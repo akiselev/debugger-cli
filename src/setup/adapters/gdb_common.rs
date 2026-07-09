@@ -17,7 +17,7 @@ pub fn parse_gdb_version(output: &str) -> Option<String> {
                 if *part == "gdb" {
                     if let Some(version) = parts.get(i + 1) {
                         // Verify it starts with a digit (version number)
-                        if version.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                        if version.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                             return Some(version.to_string());
                         }
                     }
@@ -31,7 +31,7 @@ pub fn parse_gdb_version(output: &str) -> Option<String> {
         .next()
         .and_then(|line| {
             line.split_whitespace()
-                .find(|token| token.chars().next().map_or(false, |c| c.is_ascii_digit()))
+                .find(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
         })
         .map(|s| s.to_string())
 }
@@ -41,7 +41,7 @@ pub fn parse_gdb_version(output: &str) -> Option<String> {
 /// Returns false on parse failure to prevent launching incompatible GDB
 pub fn is_gdb_version_sufficient(version: &str) -> bool {
     let parts: Vec<&str> = version.split('.').collect();
-    let Some(major_str) = parts.get(0) else {
+    let Some(major_str) = parts.first() else {
         return false;
     };
     let Some(minor_str) = parts.get(1) else {
@@ -60,7 +60,7 @@ pub fn is_gdb_version_sufficient(version: &str) -> bool {
 /// Retrieves GDB version by executing --version flag
 ///
 /// Returns None on exec failure or unparseable output
-pub async fn get_gdb_version(path: &std::path::PathBuf) -> Option<String> {
+pub async fn get_gdb_version(path: &std::path::Path) -> Option<String> {
     let output = tokio::process::Command::new(path)
         .arg("--version")
         .output()

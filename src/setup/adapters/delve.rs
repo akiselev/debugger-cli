@@ -222,7 +222,7 @@ async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
         _ => arch,
     };
 
-    let patterns = vec![
+    let patterns = [
         format!("delve_{}_{}.tar.gz", platform, delve_arch),
         format!("delve_*_{}_{}.tar.gz", platform, delve_arch),
     ];

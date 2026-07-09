@@ -11,8 +11,8 @@ debugger test tests/scenarios/hello_world_c.yml
 # Run with verbose output
 debugger test tests/scenarios/hello_world_c.yml --verbose
 
-# Run with a specific adapter
-debugger test tests/scenarios/hello_world_c.yml --adapter gdb
+# Select an adapter in the scenario's `target.adapter` field.
+debugger test tests/scenarios/hello_world_c.yml
 ```
 
 ## Test Architecture
@@ -107,9 +107,11 @@ steps:
 debugger test tests/scenarios/your_new_test.yml --verbose
 ```
 
-### Step 4: Add to CI
+### Step 4: Run It With Its Adapter
 
-Add the test to `.github/workflows/e2e-tests.yml` under the appropriate adapter job.
+Adapter-backed scenarios are opt-in: run the scenario on a machine with its
+declared adapter installed. The repository CI always runs the Rust test suite
+and Clippy, but it does not provision every DAP adapter.
 
 ## Step Types Reference
 
@@ -191,9 +193,8 @@ command: "break add"
    - Test basic debugging workflow
    - Set breakpoint, continue, inspect locals, exit
 
-3. **Add compilation to CI**: `.github/workflows/e2e-tests.yml`
-   - Add fixture compilation step
-   - Add adapter-specific test job if needed
+3. **Document the adapter prerequisite** in the scenario description and run
+   it locally before submitting changes.
 
 4. **Update documentation**:
    - `tests/fixtures/README.md` - Document new fixture
@@ -214,12 +215,6 @@ Not all features work with all adapters:
 
 ## Running Tests in CI
 
-Tests run automatically on push/PR via GitHub Actions:
-- Matrix: 5 adapters × 2 platforms
-- Tests have automatic retry (3 attempts) for flaky test handling
-- Failed test logs uploaded as artifacts
-
-To debug CI failures:
-1. Check the job logs for error messages
-2. Download log artifacts from the failed run
-3. Reproduce locally with `--verbose` flag
+The GitHub Actions workflow runs `cargo test --all-targets --no-fail-fast` and
+`cargo clippy --all-targets -- -D warnings` on every push and pull request.
+Adapter-specific scenarios should be reproduced locally with `--verbose`.

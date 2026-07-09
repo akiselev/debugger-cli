@@ -191,9 +191,6 @@ pub enum Command {
         clear: bool,
     },
 
-    /// Subscribe to output events (for --follow)
-    SubscribeOutput,
-
     // === Shutdown ===
     /// Shutdown the daemon
     Shutdown,
@@ -272,6 +269,9 @@ pub struct StatusResult {
     pub state: Option<String>,
     pub program: Option<String>,
     pub adapter: Option<String>,
+    /// Thread selected for inspection commands, if any.
+    #[serde(default)]
+    pub selected_thread: Option<i64>,
     pub stopped_thread: Option<i64>,
     pub stopped_reason: Option<String>,
 }

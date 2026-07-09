@@ -2,9 +2,9 @@
 
 This document tracks the implementation status of debugger-cli.
 
-> **Current Version**: 0.1.1
+> **Current Version**: 0.1.3
 > **Status**: Feature-complete for core debugging workflows
-> **Last Updated**: 2026-01-25
+> **Last Updated**: 2026-07-09
 
 ## Implementation Status
 
@@ -50,7 +50,7 @@ This document tracks the implementation status of debugger-cli.
 | `stop` | | ✅ | Stop debug session |
 | `detach` | | ✅ | Detach (keep process running) |
 | `status` | | ✅ | Show daemon/session status |
-| `restart` | | ✅ | Restart program with same args |
+| `restart` | | ✅ | Restart when the active adapter supports the DAP restart request |
 | `breakpoint add` | `break`, `b` | ✅ | Add breakpoint |
 | `breakpoint remove` | | ✅ | Remove breakpoint |
 | `breakpoint list` | | ✅ | List all breakpoints |

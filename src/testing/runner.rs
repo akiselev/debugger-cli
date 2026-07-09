@@ -175,7 +175,7 @@ pub async fn run_scenario(path: &Path, verbose: bool) -> Result<TestResult> {
         }
 
         println!("  {} Attached to process", "✓".green());
-    } else if scenario.target.mode != "launch" && scenario.target.mode != "launch" {
+    } else if scenario.target.mode != "launch" {
         // Unknown mode - fail explicitly
         return Err(Error::Config(format!(
             "Unknown target mode '{}'. Supported modes: 'launch', 'attach'",
@@ -301,9 +301,16 @@ async fn execute_command_step(
     let cmd = parse_command(command_str)?;
 
     let result = client.send_command(cmd).await;
+    let allow_failure = expect.map(|exp| exp.allow_failure).unwrap_or(false);
 
     // Check expectations
     if let Some(exp) = expect {
+        if exp.allow_failure && exp.success.is_some() {
+            return Err(Error::Config(format!(
+                "Command '{}' cannot combine allow_failure with success",
+                command_str
+            )));
+        }
         if let Some(should_succeed) = exp.success {
             let did_succeed = result.is_ok();
             if should_succeed != did_succeed {
@@ -326,7 +333,35 @@ async fn execute_command_step(
         return Ok(());
     }
 
-    result?;
+    let value = match result {
+        Ok(value) => value,
+        Err(error) if allow_failure => {
+            println!(
+                "  {} Step {}: {} (allowed failure: {})",
+                "✓".green(),
+                step_num,
+                command_str.dimmed(),
+                error.to_string().dimmed()
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+
+    if let Some(expected_substr) = expect.and_then(|exp| exp.output_contains.as_ref()) {
+        let output = serde_json::to_string(&value).map_err(|error| {
+            Error::TestAssertion(format!(
+                "Failed to serialize result of command '{}': {}",
+                command_str, error
+            ))
+        })?;
+        if !output.contains(expected_substr) {
+            return Err(Error::TestAssertion(format!(
+                "Command '{}' output missing '{}'",
+                command_str, expected_substr
+            )));
+        }
+    }
 
     println!(
         "  {} Step {}: {}",
@@ -725,52 +760,14 @@ fn parse_command(s: &str) -> Result<Command> {
                     "break command requires a location".to_string(),
                 ));
             }
-            // Handle "break add <location>" or just "break <location>"
-            // Also handle --condition "expr" and --hit-count N flags
-            let mut location_str = String::new();
-            let mut condition: Option<String> = None;
-            let mut hit_count: Option<u32> = None;
-            let mut i = 0;
-
             // Skip "add" subcommand if present AND there are more args
             // (otherwise "add" is the function name to break on)
-            if args.get(0) == Some(&"add") && args.len() > 1 {
-                i = 1;
-            }
-
-            while i < args.len() {
-                if args[i] == "--condition" && i + 1 < args.len() {
-                    // Collect condition expression (may be quoted)
-                    i += 1;
-                    let mut cond_parts = Vec::new();
-                    while i < args.len() && !args[i].starts_with("--") {
-                        cond_parts.push(args[i]);
-                        i += 1;
-                    }
-                    condition = Some(cond_parts.join(" ").trim_matches('"').to_string());
-                } else if args[i] == "--hit-count" && i + 1 < args.len() {
-                    i += 1;
-                    hit_count = Some(args[i].parse().map_err(|_| {
-                        Error::Config(format!("Invalid hit count: {}", args[i]))
-                    })?);
-                    i += 1;
-                } else if !args[i].starts_with("--") {
-                    if !location_str.is_empty() {
-                        location_str.push(' ');
-                    }
-                    location_str.push_str(args[i]);
-                    i += 1;
-                } else {
-                    i += 1;
-                }
-            }
-
-            let location = BreakpointLocation::parse(&location_str)?;
-            Ok(Command::BreakpointAdd {
-                location,
-                condition,
-                hit_count,
-            })
+            let breakpoint_args = if args.first() == Some(&"add") && args.len() > 1 {
+                &args[1..]
+            } else {
+                args
+            };
+            parse_breakpoint_add(breakpoint_args, "break")
         }
 
         "breakpoint" => {
@@ -787,12 +784,7 @@ fn parse_command(s: &str) -> Result<Command> {
                             "breakpoint add requires a location".to_string(),
                         ));
                     }
-                    let location = BreakpointLocation::parse(args[1])?;
-                    Ok(Command::BreakpointAdd {
-                        location,
-                        condition: None,
-                        hit_count: None,
-                    })
+                    parse_breakpoint_add(&args[1..], "breakpoint add")
                 }
                 "remove" => {
                     if args.len() < 2 {
@@ -839,6 +831,25 @@ fn parse_command(s: &str) -> Result<Command> {
             }
         }
 
+        "context" | "where" => {
+            let lines = match args {
+                [] => 5,
+                [value] => value.parse().map_err(|_| {
+                    Error::Config(format!("{} requires a numeric line count", cmd))
+                })?,
+                [flag, value] if *flag == "--lines" => value.parse().map_err(|_| {
+                    Error::Config(format!("{} --lines requires a number", cmd))
+                })?,
+                _ => {
+                    return Err(Error::Config(format!(
+                        "{} accepts either <lines> or --lines <lines>",
+                        cmd
+                    )))
+                }
+            };
+            Ok(Command::Context { lines })
+        }
+
         "locals" => Ok(Command::Locals { frame_id: None }),
 
         "backtrace" | "bt" => Ok(Command::StackTrace {
@@ -882,7 +893,11 @@ fn parse_command(s: &str) -> Result<Command> {
             Ok(Command::Evaluate {
                 expression: args.join(" "),
                 frame_id: None,
-                context: EvaluateContext::Watch,
+                context: if cmd == "eval" {
+                    EvaluateContext::Repl
+                } else {
+                    EvaluateContext::Watch
+                },
             })
         }
 
@@ -891,26 +906,30 @@ fn parse_command(s: &str) -> Result<Command> {
         "restart" => Ok(Command::Restart),
 
         "output" => {
-            // Parse --tail N and --clear flags
+            // Parse the same options accepted by the user-facing CLI.
             let mut tail: Option<usize> = None;
             let mut clear = false;
             let mut i = 0;
             while i < args.len() {
                 match args[i] {
-                    "--tail" => {
-                        if i + 1 < args.len() {
-                            tail = args[i + 1].parse().ok();
-                            i += 2;
-                        } else {
-                            i += 1;
-                        }
+                    "--tail" | "-t" => {
+                        let value = args.get(i + 1).ok_or_else(|| {
+                            Error::Config("output --tail requires a number".to_string())
+                        })?;
+                        tail = Some(value.parse().map_err(|_| {
+                            Error::Config(format!("Invalid output tail value: {}", value))
+                        })?);
+                        i += 2;
                     }
                     "--clear" => {
                         clear = true;
                         i += 1;
                     }
-                    _ => {
-                        i += 1;
+                    option => {
+                        return Err(Error::Config(format!(
+                            "Unknown output option: {}",
+                            option
+                        )));
                     }
                 }
             }
@@ -919,6 +938,64 @@ fn parse_command(s: &str) -> Result<Command> {
 
         _ => Err(Error::Config(format!("Unknown command: {}", cmd))),
     }
+}
+
+/// Parse a breakpoint location and the shared breakpoint options used by the
+/// CLI shorthand and the `breakpoint add` subcommand.
+fn parse_breakpoint_add(args: &[&str], command: &str) -> Result<Command> {
+    let mut location_parts = Vec::new();
+    let mut condition = None;
+    let mut hit_count = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index] {
+            "--condition" | "-c" => {
+                index += 1;
+                let mut condition_parts = Vec::new();
+                while index < args.len() && !args[index].starts_with("--") {
+                    condition_parts.push(args[index]);
+                    index += 1;
+                }
+                if condition_parts.is_empty() {
+                    return Err(Error::Config(format!(
+                        "{} --condition requires an expression",
+                        command
+                    )));
+                }
+                condition = Some(condition_parts.join(" ").trim_matches('"').to_string());
+            }
+            "--hit-count" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    Error::Config(format!("{} --hit-count requires a number", command))
+                })?;
+                hit_count = Some(value.parse().map_err(|_| {
+                    Error::Config(format!("Invalid hit count: {}", value))
+                })?);
+                index += 2;
+            }
+            option if option.starts_with('-') => {
+                return Err(Error::Config(format!(
+                    "Unknown {} option: {}",
+                    command, option
+                )));
+            }
+            location => {
+                location_parts.push(location);
+                index += 1;
+            }
+        }
+    }
+
+    if location_parts.is_empty() {
+        return Err(Error::Config(format!("{} requires a location", command)));
+    }
+
+    Ok(Command::BreakpointAdd {
+        location: BreakpointLocation::parse(&location_parts.join(" "))?,
+        condition,
+        hit_count,
+    })
 }
 
 #[cfg(test)]
@@ -967,11 +1044,23 @@ mod tests {
     fn test_parse_print_commands() {
         let cmd = parse_command("print x + y").unwrap();
         match cmd {
-            Command::Evaluate { expression, .. } => {
+            Command::Evaluate {
+                expression, context, ..
+            } => {
                 assert_eq!(expression, "x + y");
+                assert!(matches!(context, EvaluateContext::Watch));
             }
             _ => panic!("Expected Evaluate command"),
         }
+
+        let cmd = parse_command("eval counter = counter + 1").unwrap();
+        assert!(matches!(
+            cmd,
+            Command::Evaluate {
+                context: EvaluateContext::Repl,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1003,5 +1092,52 @@ mod tests {
             }
             _ => panic!("Expected BreakpointAdd command"),
         }
+    }
+
+    #[test]
+    fn test_parse_breakpoint_subcommand_options() {
+        let cmd = parse_command("breakpoint add foo.c:10 --condition x > 5 --hit-count 2")
+            .unwrap();
+        match cmd {
+            Command::BreakpointAdd {
+                condition,
+                hit_count,
+                ..
+            } => {
+                assert_eq!(condition, Some("x > 5".to_string()));
+                assert_eq!(hit_count, Some(2));
+            }
+            _ => panic!("Expected BreakpointAdd command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_context_commands() {
+        assert!(matches!(
+            parse_command("context").unwrap(),
+            Command::Context { lines: 5 }
+        ));
+        assert!(matches!(
+            parse_command("where 3").unwrap(),
+            Command::Context { lines: 3 }
+        ));
+        assert!(matches!(
+            parse_command("context --lines 7").unwrap(),
+            Command::Context { lines: 7 }
+        ));
+        assert!(parse_command("context --lines nope").is_err());
+    }
+
+    #[test]
+    fn test_parse_output_commands() {
+        assert!(matches!(
+            parse_command("output -t 4 --clear").unwrap(),
+            Command::GetOutput {
+                tail: Some(4),
+                clear: true
+            }
+        ));
+        assert!(parse_command("output --tail invalid").is_err());
+        assert!(parse_command("output --follow").is_err());
     }
 }

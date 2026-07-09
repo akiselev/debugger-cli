@@ -3,6 +3,7 @@
 //! The daemon is spawned automatically by CLI commands and maintains
 //! persistent debug sessions across CLI invocations.
 
+mod actor;
 mod handler;
 mod server;
 mod session;

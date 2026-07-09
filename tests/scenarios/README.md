@@ -75,21 +75,16 @@ debugger test tests/scenarios/hello_world_c.yml
 # Verbose output
 debugger test tests/scenarios/conditional_breakpoint_go.yml --verbose
 
-# Run with specific adapter
-debugger test tests/scenarios/hello_world_c.yml --adapter gdb
+# Select an adapter in the scenario's `target.adapter` field.
+debugger test tests/scenarios/hello_world_c.yml
 ```
 
 ## Running Tests in CI
 
-GitHub Actions runs all scenarios across adapter/OS matrix:
-
-- **LLDB**: Ubuntu + macOS (C, Rust)
-- **GDB**: Ubuntu + macOS (C)
-- **Delve**: Ubuntu + macOS (Go)
-- **debugpy**: Ubuntu + macOS (Python)
-- **js-debug**: Ubuntu + macOS (JavaScript, TypeScript)
-
-Tests run on every push and PR via GitHub Actions. The workflow includes parallel jobs for each adapter (LLDB, GDB, Delve, debugpy, js-debug) on Ubuntu and macOS, with graceful fallback for macOS GDB installation failures.
+The repository CI runs the Rust test suite and Clippy on every push and pull
+request. Adapter-backed scenarios remain opt-in because they require the
+relevant adapter and toolchain to be installed; run them locally before adding
+or changing a scenario.
 
 ## Adapter Feature Compatibility
 
@@ -103,7 +98,7 @@ Not all features work with all adapters. Tests are created only for compatible c
 | Stack navigation | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Output capture | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Pause | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Restart | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Restart | Adapter-dependent | Adapter-dependent | Adapter-dependent | Adapter-dependent | Adapter-dependent |
 
 ## Writing New Scenarios
 

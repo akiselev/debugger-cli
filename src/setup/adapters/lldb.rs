@@ -260,7 +260,7 @@ async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
     let platform = platform_str();
     let arch = arch_str();
 
-    let asset_patterns = vec![
+    let asset_patterns = [
         format!("LLVM-*-{}-{}.tar.xz", arch, platform),
         format!("clang+llvm-*-{}-*{}.tar.xz", arch, platform),
     ];

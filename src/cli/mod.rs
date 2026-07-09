@@ -52,8 +52,10 @@ pub async fn dispatch(command: Commands) -> Result<()> {
                 println!("Set {} initial breakpoint(s)", initial_breakpoints.len());
             }
 
-            if stop_on_entry || has_initial_breakpoints {
+            if stop_on_entry {
                 println!("Stopped at entry point. Use 'debugger continue' to run.");
+            } else if has_initial_breakpoints {
+                println!("Program is running. It will stop when an initial breakpoint is hit.");
             } else {
                 println!("Program is running. Use 'debugger await' to wait for a stop.");
             }
@@ -150,7 +152,11 @@ pub async fn dispatch(command: Commands) -> Result<()> {
             }
         },
 
-        Commands::Break { location, condition } => {
+        Commands::Break {
+            location,
+            condition,
+            hit_count,
+        } => {
             // Shorthand for breakpoint add
             let mut client = DaemonClient::connect().await?;
             let loc = BreakpointLocation::parse(&location)?;
@@ -159,7 +165,7 @@ pub async fn dispatch(command: Commands) -> Result<()> {
                 .send_command(Command::BreakpointAdd {
                     location: loc,
                     condition,
-                    hit_count: None,
+                    hit_count,
                 })
                 .await?;
 
@@ -398,7 +404,7 @@ pub async fn dispatch(command: Commands) -> Result<()> {
                 // Show current thread info
                 let result = client.send_command(Command::Status).await?;
                 let status: StatusResult = serde_json::from_value(result)?;
-                if let Some(thread_id) = status.stopped_thread {
+                if let Some(thread_id) = status.selected_thread {
                     println!("Current thread: {}", thread_id);
                 } else {
                     println!("No thread selected");
@@ -472,13 +478,33 @@ pub async fn dispatch(command: Commands) -> Result<()> {
         }
 
         Commands::Output { follow, tail, clear } => {
-            let mut client = DaemonClient::connect().await?;
-
             if follow {
-                println!("Output streaming not yet implemented");
-                return Ok(());
+                use std::io::Write;
+
+                eprintln!("Following debuggee output (Ctrl+C to stop)");
+                // Connections are handled concurrently by the daemon, so one
+                // long-lived connection can poll without blocking other clients.
+                let mut client = DaemonClient::connect().await?;
+                loop {
+                    // Clearing after each read turns the daemon's bounded buffer
+                    // into a cursor without needing a second streaming protocol.
+                    let result = client
+                        .send_command(Command::GetOutput {
+                            tail: None,
+                            clear: true,
+                        })
+                        .await?;
+                    let output = result["output"].as_str().unwrap_or("");
+                    if !output.is_empty() {
+                        print!("{}", output);
+                        std::io::stdout().flush()?;
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
             }
 
+            let mut client = DaemonClient::connect().await?;
             let result = client
                 .send_command(Command::GetOutput { tail, clear })
                 .await?;

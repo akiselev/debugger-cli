@@ -111,25 +111,10 @@ fn get_asset_pattern() -> Vec<String> {
     let platform = platform_str();
     let arch = arch_str();
 
-    // Map arch names to CodeLLDB naming convention
-    let codelldb_arch = match arch {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        _ => arch,
-    };
-
-    // Map platform names
-    let codelldb_platform = match platform {
-        "darwin" => "darwin",
-        "linux" => "linux",
-        "windows" => "windows",
-        _ => platform,
-    };
-
     vec![
-        format!("codelldb-{}-{}.vsix", codelldb_arch, codelldb_platform),
+        format!("codelldb-{}-{}.vsix", arch, platform),
         // Alternative naming patterns
-        format!("codelldb-{}-{}-*.vsix", codelldb_arch, codelldb_platform),
+        format!("codelldb-{}-{}-*.vsix", arch, platform),
     ]
 }
 
@@ -191,12 +176,10 @@ async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
     #[cfg(unix)]
     {
         let lib_path = adapter_dir.join("extension").join("adapter");
-        for entry in std::fs::read_dir(&lib_path)? {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.extension().map(|e| e == "so" || e == "dylib").unwrap_or(false) {
-                    make_executable(&path)?;
-                }
+        for entry in std::fs::read_dir(&lib_path)?.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "so" || e == "dylib").unwrap_or(false) {
+                make_executable(&path)?;
             }
         }
 
@@ -207,18 +190,16 @@ async fn install_from_github(opts: &InstallOptions) -> Result<InstallResult> {
                 let dir = lldb_dir.join(subdir);
                 if dir.exists() {
                     if let Ok(entries) = std::fs::read_dir(&dir) {
-                        for entry in entries {
-                            if let Ok(entry) = entry {
-                                let path = entry.path();
-                                if path.is_file() {
-                                    // Log warning but don't fail installation
-                                    if let Err(e) = make_executable(&path) {
-                                        eprintln!(
-                                            "Warning: could not make {} executable: {}",
-                                            path.display(),
-                                            e
-                                        );
-                                    }
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() {
+                                // Log warning but don't fail installation
+                                if let Err(e) = make_executable(&path) {
+                                    eprintln!(
+                                        "Warning: could not make {} executable: {}",
+                                        path.display(),
+                                        e
+                                    );
                                 }
                             }
                         }
