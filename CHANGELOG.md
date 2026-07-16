@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Debuggee output reads are now cursor-based and non-destructive. `GetOutput`
+  accepts an optional `cursor` and returns `next_cursor`, so concurrent
+  `output --follow` clients and one-shot `output` calls each see the full
+  stream; old data expires only via the buffer's size bounds or an explicit
+  `--clear`.
+- `DebugSession` was split internally: a reducer-owned `SessionModel` holds
+  lifecycle/thread/frame/breakpoint/exit state, and a cursor-based
+  `OutputBuffer` holds debuggee output, with `DebugSession` remaining the
+  façade over the DAP transport. All DAP requests now go through a single
+  send path, so normal and deferred-response requests (GDB/debugpy `launch`)
+  share one lifecycle.
 - The daemon now handles client connections concurrently. A session actor owns
   the debug session and serializes DAP requests, while `await` waits on state
   snapshots — so `pause`, `status`, and other commands from a second terminal

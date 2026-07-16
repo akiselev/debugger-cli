@@ -189,6 +189,10 @@ pub enum Command {
     GetOutput {
         tail: Option<usize>,
         clear: bool,
+        /// Read only events at or after this cursor (from a previous
+        /// response's `next_cursor`). `None` reads the whole buffer.
+        #[serde(default)]
+        cursor: Option<u64>,
     },
 
     // === Shutdown ===

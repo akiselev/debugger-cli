@@ -594,6 +594,7 @@ async fn execute_check_output_step(
         .send_command(Command::GetOutput {
             tail: None,
             clear: false,
+            cursor: None,
         })
         .await?;
 
@@ -933,7 +934,7 @@ fn parse_command(s: &str) -> Result<Command> {
                     }
                 }
             }
-            Ok(Command::GetOutput { tail, clear })
+            Ok(Command::GetOutput { tail, clear, cursor: None })
         }
 
         _ => Err(Error::Config(format!("Unknown command: {}", cmd))),
@@ -1134,7 +1135,8 @@ mod tests {
             parse_command("output -t 4 --clear").unwrap(),
             Command::GetOutput {
                 tail: Some(4),
-                clear: true
+                clear: true,
+                cursor: None
             }
         ));
         assert!(parse_command("output --tail invalid").is_err());

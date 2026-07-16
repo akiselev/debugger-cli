@@ -485,13 +485,16 @@ pub async fn dispatch(command: Commands) -> Result<()> {
                 // Connections are handled concurrently by the daemon, so one
                 // long-lived connection can poll without blocking other clients.
                 let mut client = DaemonClient::connect().await?;
+                // Poll from this follower's own cursor: non-destructive, so
+                // concurrent followers and one-shot `output` calls each see
+                // the full stream.
+                let mut cursor: Option<u64> = None;
                 loop {
-                    // Clearing after each read turns the daemon's bounded buffer
-                    // into a cursor without needing a second streaming protocol.
                     let result = client
                         .send_command(Command::GetOutput {
                             tail: None,
-                            clear: true,
+                            clear: false,
+                            cursor,
                         })
                         .await?;
                     let output = result["output"].as_str().unwrap_or("");
@@ -499,6 +502,7 @@ pub async fn dispatch(command: Commands) -> Result<()> {
                         print!("{}", output);
                         std::io::stdout().flush()?;
                     }
+                    cursor = result["next_cursor"].as_u64().or(cursor);
 
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
@@ -506,7 +510,7 @@ pub async fn dispatch(command: Commands) -> Result<()> {
 
             let mut client = DaemonClient::connect().await?;
             let result = client
-                .send_command(Command::GetOutput { tail, clear })
+                .send_command(Command::GetOutput { tail, clear, cursor: None })
                 .await?;
 
             let output = result["output"].as_str().unwrap_or("");

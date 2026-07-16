@@ -1,9 +1,17 @@
-//! Debug session state machine
+//! Debug session façade
 //!
-//! Manages the lifecycle of a debug session from initialization through
-//! termination.
+//! `DebugSession` orchestrates the DAP adapter (`DapClient` transport), feeds
+//! adapter events into the reducer-owned `SessionModel`, and routes debuggee
+//! output into the cursor-based `OutputBuffer`. It manages the lifecycle of a
+//! debug session from initialization through termination.
 
-use std::collections::{HashMap, VecDeque};
+mod model;
+mod output;
+
+pub use model::SessionState;
+pub use output::OutputEvent;
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tokio::sync::mpsc;
@@ -15,132 +23,8 @@ use crate::dap::{
 };
 use crate::ipc::protocol::{BreakpointInfo, BreakpointLocation};
 
-/// Debug session state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionState {
-    /// Program is running
-    Running,
-    /// Program has stopped (breakpoint, step, exception)
-    Stopped,
-    /// Program has exited
-    Exited,
-    /// Session is terminating
-    Terminating,
-}
-
-impl std::fmt::Display for SessionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Running => write!(f, "running"),
-            Self::Stopped => write!(f, "stopped"),
-            Self::Exited => write!(f, "exited"),
-            Self::Terminating => write!(f, "terminating"),
-        }
-    }
-}
-
-/// Stored breakpoint information
-#[derive(Debug, Clone)]
-struct StoredBreakpoint {
-    id: u32,
-    location: BreakpointLocation,
-    condition: Option<String>,
-    hit_count: Option<u32>,
-    enabled: bool,
-    verified: bool,
-    actual_line: Option<u32>,
-    message: Option<String>,
-}
-
-/// Output event for buffering
-#[derive(Debug, Clone)]
-pub struct OutputEvent {
-    pub category: String,
-    pub output: String,
-}
-
-/// Bounded, in-memory buffer for debuggee output.
-///
-/// The DAP reader can produce arbitrarily large output events, so the buffer
-/// enforces both an event-count and a byte-count limit. Keeping this logic
-/// separate from `DebugSession` makes its accounting independently testable.
-#[derive(Debug)]
-struct OutputBuffer {
-    events: VecDeque<OutputEvent>,
-    max_events: usize,
-    max_bytes: usize,
-    current_bytes: usize,
-}
-
-impl OutputBuffer {
-    fn new(max_events: usize, max_bytes: usize) -> Self {
-        Self {
-            events: VecDeque::new(),
-            max_events,
-            max_bytes,
-            current_bytes: 0,
-        }
-    }
-
-    fn push(&mut self, category: &str, output: &str) {
-        if self.max_events == 0 || self.max_bytes == 0 {
-            return;
-        }
-
-        let output = truncate_utf8_to_bytes(output, self.max_bytes);
-        if output.is_empty() {
-            return;
-        }
-        let output_bytes = output.len();
-
-        while self.current_bytes + output_bytes > self.max_bytes && !self.events.is_empty() {
-            if let Some(removed) = self.events.pop_front() {
-                self.current_bytes = self.current_bytes.saturating_sub(removed.output.len());
-            }
-        }
-
-        while self.events.len() >= self.max_events && !self.events.is_empty() {
-            if let Some(removed) = self.events.pop_front() {
-                self.current_bytes = self.current_bytes.saturating_sub(removed.output.len());
-            }
-        }
-
-        self.events.push_back(OutputEvent {
-            category: category.to_string(),
-            output,
-        });
-        self.current_bytes += output_bytes;
-    }
-
-    fn take(&mut self, clear: bool) -> Vec<OutputEvent> {
-        let result = self.events.iter().cloned().collect();
-
-        if clear {
-            self.events.clear();
-            self.current_bytes = 0;
-        }
-
-        result
-    }
-}
-
-/// Return the longest valid UTF-8 prefix that fits within `max_bytes`.
-fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_string();
-    }
-
-    let mut end = 0;
-    for (start, character) in value.char_indices() {
-        let character_end = start + character.len_utf8();
-        if character_end > max_bytes {
-            break;
-        }
-        end = character_end;
-    }
-
-    value[..end].to_string()
-}
+use model::{SessionModel, StoredBreakpoint};
+use output::OutputBuffer;
 
 /// Debug session managing a DAP connection
 pub struct DebugSession {
@@ -148,8 +32,6 @@ pub struct DebugSession {
     client: DapClient,
     /// Event receiver from DAP client
     events_rx: mpsc::UnboundedReceiver<Event>,
-    /// Current session state
-    state: SessionState,
     /// Adapter capabilities
     capabilities: Capabilities,
     /// Program being debugged
@@ -158,34 +40,10 @@ pub struct DebugSession {
     adapter_name: String,
     /// Whether we launched (vs attached)
     launched: bool,
-    /// All breakpoints by source file
-    source_breakpoints: HashMap<PathBuf, Vec<StoredBreakpoint>>,
-    /// Function breakpoints
-    function_breakpoints: Vec<StoredBreakpoint>,
-    /// Next breakpoint ID
-    next_bp_id: u32,
-    /// Cached threads
-    threads: Vec<Thread>,
-    /// Currently selected thread (may differ from stopped thread)
-    selected_thread: Option<i64>,
-    /// Currently stopped thread
-    stopped_thread: Option<i64>,
-    /// Reason for last stop
-    stopped_reason: Option<String>,
-    /// Full body of the last stopped event, cleared when execution resumes
-    last_stop: Option<StoppedEventBody>,
-    /// Hit breakpoint IDs from last stop
-    hit_breakpoints: Vec<u32>,
-    /// Current frame index (0 = top of stack)
-    current_frame_index: usize,
-    /// Current frame ID (for variable inspection)
-    current_frame: Option<i64>,
-    /// Cached stack frames for current stop
-    cached_frames: Vec<StackFrame>,
+    /// Reducer-owned session state
+    model: SessionModel,
     /// Bounded output buffer
     output_buffer: OutputBuffer,
-    /// Exit code if program exited
-    exit_code: Option<i32>,
 }
 
 impl DebugSession {
@@ -290,7 +148,7 @@ impl DebugSession {
             stop_on_entry,
             "Sending DAP launch request"
         );
-        
+
         // The DAP protocol permits adapters to defer the launch response until
         // after configurationDone. GDB and debugpy both do so, while other
         // adapters may respond immediately. Waiting here deadlocks the former
@@ -414,31 +272,23 @@ impl DebugSession {
             SessionState::Running
         };
 
+        let mut model = SessionModel::new(initial_state);
+        model.source_breakpoints = source_breakpoints;
+        model.function_breakpoints = function_breakpoints;
+        model.next_bp_id = next_bp_id;
+
         Ok(Self {
             client,
             events_rx,
-            state: initial_state,
             capabilities,
             program: program.to_path_buf(),
             adapter_name,
             launched: true,
-            source_breakpoints,
-            function_breakpoints,
-            next_bp_id,
-            threads: Vec::new(),
-            selected_thread: None,
-            stopped_thread: None,
-            stopped_reason: None,
-            last_stop: None,
-            hit_breakpoints: Vec::new(),
-            current_frame_index: 0,
-            current_frame: None,
-            cached_frames: Vec::new(),
+            model,
             output_buffer: OutputBuffer::new(
                 config.output.max_events,
                 config.output.max_bytes_mb * 1024 * 1024,
             ),
-            exit_code: None,
         })
     }
 
@@ -497,42 +347,33 @@ impl DebugSession {
             .take_event_receiver()
             .ok_or_else(|| Error::Internal("Failed to get event receiver".to_string()))?;
 
+        // Attached processes start stopped
+        let mut model = SessionModel::new(SessionState::Stopped);
+        model.stopped_reason = Some("attach".to_string());
+
         Ok(Self {
             client,
             events_rx,
-            state: SessionState::Stopped, // Attached processes start stopped
             capabilities,
             program: PathBuf::from(format!("pid:{}", pid)),
             adapter_name,
             launched: false,
-            source_breakpoints: HashMap::new(),
-            function_breakpoints: Vec::new(),
-            next_bp_id: 1,
-            threads: Vec::new(),
-            selected_thread: None,
-            stopped_thread: None,
-            stopped_reason: Some("attach".to_string()),
-            last_stop: None,
-            hit_breakpoints: Vec::new(),
-            current_frame_index: 0,
-            current_frame: None,
-            cached_frames: Vec::new(),
+            model,
             output_buffer: OutputBuffer::new(
                 config.output.max_events,
                 config.output.max_bytes_mb * 1024 * 1024,
             ),
-            exit_code: None,
         })
     }
 
     /// Get current state
     pub fn state(&self) -> SessionState {
-        self.state
+        self.model.state
     }
 
     /// Full body of the last stopped event, if the program is stopped
     pub fn last_stop(&self) -> Option<&StoppedEventBody> {
-        self.last_stop.as_ref()
+        self.model.last_stop.as_ref()
     }
 
     /// Get program path
@@ -547,17 +388,17 @@ impl DebugSession {
 
     /// Get stopped thread ID
     pub fn stopped_thread(&self) -> Option<i64> {
-        self.stopped_thread
+        self.model.stopped_thread
     }
 
-    /// Get stopped reason
+    /// Get stop reason
     pub fn stopped_reason(&self) -> Option<&str> {
-        self.stopped_reason.as_deref()
+        self.model.stopped_reason.as_deref()
     }
 
-    /// Get exit code if exited
+    /// Get exit code
     pub fn exit_code(&self) -> Option<i32> {
-        self.exit_code
+        self.model.exit_code
     }
 
     /// Process pending events
@@ -565,7 +406,7 @@ impl DebugSession {
         let mut events = Vec::new();
 
         while let Ok(event) = self.events_rx.try_recv() {
-            self.handle_event(&event);
+            self.dispatch_event(&event);
             events.push(event);
         }
 
@@ -576,100 +417,20 @@ impl DebugSession {
     /// This ensures we don't lose state updates from events while clearing the queue
     fn drain_pending_events(&mut self) {
         while let Ok(event) = self.events_rx.try_recv() {
-            self.handle_event(&event);
+            self.dispatch_event(&event);
         }
     }
 
-    /// Handle a single event
-    fn handle_event(&mut self, event: &Event) {
+    /// Route a single event: output goes to the buffer, everything else is
+    /// state and reduces into the model.
+    fn dispatch_event(&mut self, event: &Event) {
         match event {
-            Event::Stopped(body) => {
-                self.state = SessionState::Stopped;
-                self.stopped_thread = body.thread_id;
-                self.selected_thread = body.thread_id;
-                self.stopped_reason = Some(body.reason.clone());
-                self.last_stop = Some(body.clone());
-                self.hit_breakpoints = body.hit_breakpoint_ids.clone();
-                // Reset frame tracking on stop - user starts at top of stack
-                self.current_frame = None;
-                self.current_frame_index = 0;
-                self.cached_frames.clear();
-                tracing::debug!("Stopped: {:?}", body);
-            }
-            Event::Continued { thread_id, .. } => {
-                self.state = SessionState::Running;
-                self.selected_thread = None;
-                self.stopped_thread = None;
-                self.stopped_reason = None;
-                self.last_stop = None;
-                self.hit_breakpoints.clear();
-                self.current_frame = None;
-                self.current_frame_index = 0;
-                self.cached_frames.clear();
-                tracing::debug!("Continued: thread {}", thread_id);
-            }
-            Event::Exited(body) => {
-                self.state = SessionState::Exited;
-                self.selected_thread = None;
-                self.exit_code = Some(body.exit_code);
-                tracing::info!("Program exited with code {}", body.exit_code);
-            }
-            Event::Terminated(_) => {
-                self.state = SessionState::Exited;
-                self.selected_thread = None;
-                tracing::info!("Session terminated");
-            }
             Event::Output(body) => {
-                let category = body.category.clone().unwrap_or_else(|| "console".to_string());
-                self.buffer_output(&category, &body.output);
+                let category = body.category.as_deref().unwrap_or("console");
+                self.output_buffer.push(category, &body.output);
             }
-            Event::Thread(body) => {
-                tracing::debug!("Thread {}: {}", body.thread_id, body.reason);
-                // Update thread list if needed
-                if body.reason == "exited" {
-                    self.threads.retain(|t| t.id != body.thread_id);
-                    // Clear selected thread if it was the one that exited
-                    if self.selected_thread == Some(body.thread_id) {
-                        self.selected_thread = None;
-                    }
-                }
-            }
-            Event::Breakpoint { reason, breakpoint } => {
-                tracing::debug!("Breakpoint {}: {:?}", reason, breakpoint);
-                // Update breakpoint status if we get change notifications
-                if let Some(bp_id) = breakpoint.id {
-                    self.update_breakpoint_from_event(bp_id, breakpoint);
-                }
-            }
-            _ => {}
+            _ => self.model.apply(event),
         }
-    }
-
-    /// Update breakpoint status from a breakpoint event
-    fn update_breakpoint_from_event(&mut self, _id: u32, bp: &dap::Breakpoint) {
-        // Try to match by line/source to update verification status
-        if let (Some(source), Some(line)) = (&bp.source, bp.line) {
-            if let Some(path) = &source.path {
-                let path = PathBuf::from(path);
-                if let Some(stored_bps) = self.source_breakpoints.get_mut(&path) {
-                    for stored in stored_bps.iter_mut() {
-                        if let BreakpointLocation::Line { line: stored_line, .. } = &stored.location {
-                            if *stored_line == line || stored.actual_line == Some(line) {
-                                stored.verified = bp.verified;
-                                stored.actual_line = bp.line;
-                                stored.message = bp.message.clone();
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Buffer output for later retrieval.
-    fn buffer_output(&mut self, category: &str, output: &str) {
-        self.output_buffer.push(category, output);
     }
 
     /// Add a breakpoint
@@ -679,24 +440,25 @@ impl DebugSession {
         condition: Option<String>,
         hit_count: Option<u32>,
     ) -> Result<BreakpointInfo> {
-        let bp_id = self.next_bp_id;
-        self.next_bp_id += 1;
+        let bp_id = self.model.next_bp_id;
+        self.model.next_bp_id += 1;
+
+        let stored = StoredBreakpoint {
+            id: bp_id,
+            location: location.clone(),
+            condition: condition.clone(),
+            hit_count,
+            enabled: true,
+            verified: false,
+            actual_line: None,
+            message: None,
+        };
 
         match &location {
             BreakpointLocation::Line { file, line: _ } => {
                 // Add to our tracking
-                let stored = StoredBreakpoint {
-                    id: bp_id,
-                    location: location.clone(),
-                    condition: condition.clone(),
-                    hit_count,
-                    enabled: true,
-                    verified: false,
-                    actual_line: None,
-                    message: None,
-                };
-
-                self.source_breakpoints
+                self.model
+                    .source_breakpoints
                     .entry(file.clone())
                     .or_default()
                     .push(stored);
@@ -706,7 +468,7 @@ impl DebugSession {
                 let results = match self.client.set_breakpoints(file, source_bps).await {
                     Ok(results) => results,
                     Err(error) => {
-                        if let Some(breakpoints) = self.source_breakpoints.get_mut(file) {
+                        if let Some(breakpoints) = self.model.source_breakpoints.get_mut(file) {
                             breakpoints.retain(|breakpoint| breakpoint.id != bp_id);
                         }
                         return Err(error);
@@ -715,31 +477,17 @@ impl DebugSession {
 
                 // Update verification status
                 self.update_source_breakpoint_status(file, &results);
-
-                // Find our breakpoint in results
-                let info = self.get_breakpoint_info(bp_id)?;
-                Ok(info)
             }
             BreakpointLocation::Function { name: _ } => {
-                let stored = StoredBreakpoint {
-                    id: bp_id,
-                    location: location.clone(),
-                    condition: condition.clone(),
-                    hit_count,
-                    enabled: true,
-                    verified: false,
-                    actual_line: None,
-                    message: None,
-                };
-
-                self.function_breakpoints.push(stored);
+                self.model.function_breakpoints.push(stored);
 
                 // Send all function breakpoints
                 let func_bps = self.collect_function_breakpoints();
                 let results = match self.client.set_function_breakpoints(func_bps).await {
                     Ok(results) => results,
                     Err(error) => {
-                        self.function_breakpoints
+                        self.model
+                            .function_breakpoints
                             .retain(|breakpoint| breakpoint.id != bp_id);
                         return Err(error);
                     }
@@ -747,16 +495,18 @@ impl DebugSession {
 
                 // Update verification status
                 self.update_function_breakpoint_status(&results);
-
-                let info = self.get_breakpoint_info(bp_id)?;
-                Ok(info)
             }
         }
+
+        self.model
+            .breakpoint_info(bp_id)
+            .ok_or(Error::BreakpointNotFound { id: bp_id })
     }
 
     /// Collect source breakpoints for a file
     fn collect_source_breakpoints(&self, file: &Path) -> Vec<SourceBreakpoint> {
-        self.source_breakpoints
+        self.model
+            .source_breakpoints
             .get(file)
             .map(|bps| {
                 bps.iter()
@@ -781,7 +531,8 @@ impl DebugSession {
 
     /// Collect function breakpoints
     fn collect_function_breakpoints(&self) -> Vec<FunctionBreakpoint> {
-        self.function_breakpoints
+        self.model
+            .function_breakpoints
             .iter()
             .filter(|bp| bp.enabled)
             .map(|bp| {
@@ -800,7 +551,7 @@ impl DebugSession {
 
     /// Update source breakpoint status from adapter response
     fn update_source_breakpoint_status(&mut self, file: &Path, results: &[Breakpoint]) {
-        if let Some(stored) = self.source_breakpoints.get_mut(file) {
+        if let Some(stored) = self.model.source_breakpoints.get_mut(file) {
             // Match by line number (best effort)
             for (stored_bp, result) in stored.iter_mut().zip(results.iter()) {
                 stored_bp.verified = result.verified;
@@ -812,59 +563,18 @@ impl DebugSession {
 
     /// Update function breakpoint status from adapter response
     fn update_function_breakpoint_status(&mut self, results: &[Breakpoint]) {
-        for (stored_bp, result) in self.function_breakpoints.iter_mut().zip(results.iter()) {
+        for (stored_bp, result) in self.model.function_breakpoints.iter_mut().zip(results.iter()) {
             stored_bp.verified = result.verified;
             stored_bp.actual_line = result.line;
             stored_bp.message = result.message.clone();
         }
     }
 
-    /// Get breakpoint info by ID
-    fn get_breakpoint_info(&self, id: u32) -> Result<BreakpointInfo> {
-        // Search source breakpoints
-        for (file, bps) in &self.source_breakpoints {
-            if let Some(bp) = bps.iter().find(|bp| bp.id == id) {
-                return Ok(BreakpointInfo {
-                    id: bp.id,
-                    verified: bp.verified,
-                    source: Some(file.to_string_lossy().into_owned()),
-                    line: bp.actual_line.or(match &bp.location {
-                        BreakpointLocation::Line { line, .. } => Some(*line),
-                        _ => None,
-                    }),
-                    message: bp.message.clone(),
-                    enabled: bp.enabled,
-                    condition: bp.condition.clone(),
-                    hit_count: bp.hit_count,
-                });
-            }
-        }
-
-        // Search function breakpoints
-        if let Some(bp) = self.function_breakpoints.iter().find(|bp| bp.id == id) {
-            return Ok(BreakpointInfo {
-                id: bp.id,
-                verified: bp.verified,
-                source: match &bp.location {
-                    BreakpointLocation::Function { name } => Some(name.clone()),
-                    _ => None,
-                },
-                line: bp.actual_line,
-                message: bp.message.clone(),
-                enabled: bp.enabled,
-                condition: bp.condition.clone(),
-                hit_count: bp.hit_count,
-            });
-        }
-
-        Err(Error::BreakpointNotFound { id })
-    }
-
     /// Remove a breakpoint by ID
     pub async fn remove_breakpoint(&mut self, id: u32) -> Result<()> {
         // Find and remove from source breakpoints
         let mut source_breakpoint = None;
-        for (file, bps) in &mut self.source_breakpoints {
+        for (file, bps) in &mut self.model.source_breakpoints {
             if let Some(pos) = bps.iter().position(|bp| bp.id == id) {
                 source_breakpoint = Some((file.clone(), pos, bps.remove(pos)));
                 break;
@@ -874,7 +584,7 @@ impl DebugSession {
         if let Some((file, position, removed)) = source_breakpoint {
             let source_bps = self.collect_source_breakpoints(&file);
             if let Err(error) = self.client.set_breakpoints(&file, source_bps).await {
-                if let Some(breakpoints) = self.source_breakpoints.get_mut(&file) {
+                if let Some(breakpoints) = self.model.source_breakpoints.get_mut(&file) {
                     breakpoints.insert(position, removed);
                 }
                 return Err(error);
@@ -883,11 +593,11 @@ impl DebugSession {
         }
 
         // Try function breakpoints
-        if let Some(pos) = self.function_breakpoints.iter().position(|bp| bp.id == id) {
-            let removed = self.function_breakpoints.remove(pos);
+        if let Some(pos) = self.model.function_breakpoints.iter().position(|bp| bp.id == id) {
+            let removed = self.model.function_breakpoints.remove(pos);
             let func_bps = self.collect_function_breakpoints();
             if let Err(error) = self.client.set_function_breakpoints(func_bps).await {
-                self.function_breakpoints.insert(pos, removed);
+                self.model.function_breakpoints.insert(pos, removed);
                 return Err(error);
             }
             return Ok(());
@@ -899,58 +609,22 @@ impl DebugSession {
     /// Remove all breakpoints
     pub async fn remove_all_breakpoints(&mut self) -> Result<()> {
         // Clear source breakpoints
-        let files: Vec<_> = self.source_breakpoints.keys().cloned().collect();
+        let files: Vec<_> = self.model.source_breakpoints.keys().cloned().collect();
         for file in files {
             self.client.set_breakpoints(&file, vec![]).await?;
-            self.source_breakpoints.remove(&file);
+            self.model.source_breakpoints.remove(&file);
         }
 
         // Clear function breakpoints
         self.client.set_function_breakpoints(vec![]).await?;
-        self.function_breakpoints.clear();
+        self.model.function_breakpoints.clear();
 
         Ok(())
     }
 
     /// List all breakpoints
     pub fn list_breakpoints(&self) -> Vec<BreakpointInfo> {
-        let mut result = Vec::new();
-
-        for (file, bps) in &self.source_breakpoints {
-            for bp in bps {
-                result.push(BreakpointInfo {
-                    id: bp.id,
-                    verified: bp.verified,
-                    source: Some(file.to_string_lossy().into_owned()),
-                    line: bp.actual_line.or(match &bp.location {
-                        BreakpointLocation::Line { line, .. } => Some(*line),
-                        _ => None,
-                    }),
-                    message: bp.message.clone(),
-                    enabled: bp.enabled,
-                    condition: bp.condition.clone(),
-                    hit_count: bp.hit_count,
-                });
-            }
-        }
-
-        for bp in &self.function_breakpoints {
-            result.push(BreakpointInfo {
-                id: bp.id,
-                verified: bp.verified,
-                source: match &bp.location {
-                    BreakpointLocation::Function { name } => Some(name.clone()),
-                    _ => None,
-                },
-                line: bp.actual_line,
-                message: bp.message.clone(),
-                enabled: bp.enabled,
-                condition: bp.condition.clone(),
-                hit_count: bp.hit_count,
-            });
-        }
-
-        result
+        self.model.list_breakpoints()
     }
 
     /// Continue execution
@@ -963,14 +637,7 @@ impl DebugSession {
 
         let thread_id = self.get_thread_id().await?;
         self.client.continue_execution(thread_id).await?;
-        self.state = SessionState::Running;
-        self.selected_thread = None;
-        self.stopped_thread = None;
-        self.stopped_reason = None;
-        self.last_stop = None;
-        self.current_frame = None;
-        self.current_frame_index = 0;
-        self.cached_frames.clear();
+        self.model.on_resumed();
 
         Ok(())
     }
@@ -984,14 +651,7 @@ impl DebugSession {
 
         let thread_id = self.get_thread_id().await?;
         self.client.next(thread_id).await?;
-        self.state = SessionState::Running;
-        self.selected_thread = None;
-        self.stopped_thread = None;
-        self.stopped_reason = None;
-        self.last_stop = None;
-        self.current_frame = None;
-        self.current_frame_index = 0;
-        self.cached_frames.clear();
+        self.model.on_resumed();
 
         Ok(())
     }
@@ -1005,14 +665,7 @@ impl DebugSession {
 
         let thread_id = self.get_thread_id().await?;
         self.client.step_in(thread_id).await?;
-        self.state = SessionState::Running;
-        self.selected_thread = None;
-        self.stopped_thread = None;
-        self.stopped_reason = None;
-        self.last_stop = None;
-        self.current_frame = None;
-        self.current_frame_index = 0;
-        self.cached_frames.clear();
+        self.model.on_resumed();
 
         Ok(())
     }
@@ -1026,22 +679,15 @@ impl DebugSession {
 
         let thread_id = self.get_thread_id().await?;
         self.client.step_out(thread_id).await?;
-        self.state = SessionState::Running;
-        self.selected_thread = None;
-        self.stopped_thread = None;
-        self.stopped_reason = None;
-        self.last_stop = None;
-        self.current_frame = None;
-        self.current_frame_index = 0;
-        self.cached_frames.clear();
+        self.model.on_resumed();
 
         Ok(())
     }
 
     /// Pause execution
     pub async fn pause(&mut self) -> Result<()> {
-        if self.state != SessionState::Running {
-            return Err(Error::invalid_state("pause", &self.state.to_string()));
+        if self.model.state != SessionState::Running {
+            return Err(Error::invalid_state("pause", &self.model.state.to_string()));
         }
 
         let thread_id = self.get_thread_id().await?;
@@ -1067,8 +713,8 @@ impl DebugSession {
 
     /// Get threads
     pub async fn get_threads(&mut self) -> Result<Vec<Thread>> {
-        self.threads = self.client.threads().await?;
-        Ok(self.threads.clone())
+        self.model.threads = self.client.threads().await?;
+        Ok(self.model.threads.clone())
     }
 
     /// Get scopes for current frame
@@ -1076,7 +722,7 @@ impl DebugSession {
         self.ensure_stopped()?;
 
         // Auto-fetch top frame if no frame specified and current_frame is not set
-        let frame_id = match frame_id.or(self.current_frame) {
+        let frame_id = match frame_id.or(self.model.current_frame) {
             Some(id) => id,
             None => {
                 // Fetch stack trace to get the top frame
@@ -1085,7 +731,7 @@ impl DebugSession {
                 let frame = frames.first().ok_or_else(|| {
                     Error::Internal("No stack frames available".to_string())
                 })?;
-                self.current_frame = Some(frame.id);
+                self.model.current_frame = Some(frame.id);
                 frame.id
             }
         };
@@ -1126,14 +772,14 @@ impl DebugSession {
         self.ensure_stopped()?;
 
         // Auto-fetch top frame if no frame specified and current_frame is not set
-        let frame_id = match frame_id.or(self.current_frame) {
+        let frame_id = match frame_id.or(self.model.current_frame) {
             Some(id) => Some(id),
             None => {
                 // Fetch stack trace to get the top frame
                 let thread_id = self.get_thread_id().await?;
                 let frames = self.client.stack_trace(thread_id, 1).await?;
                 if let Some(frame) = frames.first() {
-                    self.current_frame = Some(frame.id);
+                    self.model.current_frame = Some(frame.id);
                     Some(frame.id)
                 } else {
                     None
@@ -1143,21 +789,27 @@ impl DebugSession {
         self.client.evaluate(expression, frame_id, context).await
     }
 
-    /// Get buffered output
-    pub fn get_output(&mut self, clear: bool) -> Vec<OutputEvent> {
-        self.output_buffer.take(clear)
+    /// Read buffered output from `cursor` (or the oldest retained event) and
+    /// return the events plus the cursor for the next read. Clearing discards
+    /// the buffer for every client but keeps cursors monotonic.
+    pub fn read_output(&mut self, cursor: Option<u64>, clear: bool) -> (Vec<OutputEvent>, u64) {
+        let result = self.output_buffer.read_from(cursor);
+        if clear {
+            self.output_buffer.clear();
+        }
+        result
     }
 
     /// Detach from the debuggee (keep it running)
     pub async fn detach(&mut self) -> Result<()> {
-        self.state = SessionState::Terminating;
+        self.model.state = SessionState::Terminating;
         self.client.disconnect(false).await?;
         Ok(())
     }
 
     /// Stop the debuggee and terminate session
     pub async fn stop(&mut self) -> Result<()> {
-        self.state = SessionState::Terminating;
+        self.model.state = SessionState::Terminating;
         self.client.disconnect(self.launched).await?;
         self.client.terminate().await?;
         Ok(())
@@ -1170,13 +822,8 @@ impl DebugSession {
     /// user should be instructed to use 'debugger stop' then 'debugger start'.
     pub async fn restart(&mut self) -> Result<()> {
         self.client.restart(false).await?;
-        self.state = SessionState::Running;
         // Clear frame/stop state since we're restarting
-        self.stopped_thread = None;
-        self.stopped_reason = None;
-        self.current_frame = None;
-        self.current_frame_index = 0;
-        self.cached_frames.clear();
+        self.model.on_resumed();
         Ok(())
     }
 
@@ -1184,26 +831,24 @@ impl DebugSession {
     ///
     /// Returns an error if the thread is not currently reported by the adapter.
     pub async fn select_thread(&mut self, thread_id: i64) -> Result<()> {
-        self.threads = self.client.threads().await?;
-        if !self.threads.iter().any(|t| t.id == thread_id) {
+        self.model.threads = self.client.threads().await?;
+        if !self.model.threads.iter().any(|t| t.id == thread_id) {
             return Err(Error::Internal(format!(
                 "Thread {} not found. Use 'threads' command to see available threads.",
                 thread_id
             )));
         }
 
-        self.selected_thread = Some(thread_id);
+        self.model.selected_thread = Some(thread_id);
         // Reset frame selection when switching threads
-        self.current_frame_index = 0;
-        self.current_frame = None;
-        self.cached_frames.clear();
+        self.model.reset_frame_selection();
 
         Ok(())
     }
 
     /// Get the currently selected thread (for UI display)
     pub fn get_selected_thread(&self) -> Option<i64> {
-        self.selected_thread.or(self.stopped_thread)
+        self.model.selected_thread.or(self.model.stopped_thread)
     }
 
     /// Select a stack frame by index (0 = top/innermost)
@@ -1211,41 +856,41 @@ impl DebugSession {
         self.ensure_stopped()?;
 
         // Fetch frames if not cached or if requesting beyond cache
-        if self.cached_frames.is_empty() || frame_index >= self.cached_frames.len() {
+        if self.model.cached_frames.is_empty() || frame_index >= self.model.cached_frames.len() {
             let thread_id = self.get_thread_id().await?;
             // Fetch enough frames to include the requested one
             let needed = (frame_index + 1).max(20);
-            self.cached_frames = self.client.stack_trace(thread_id, needed as i64).await?;
+            self.model.cached_frames = self.client.stack_trace(thread_id, needed as i64).await?;
         }
 
-        if frame_index >= self.cached_frames.len() {
+        if frame_index >= self.model.cached_frames.len() {
             return Err(Error::FrameNotFound(frame_index));
         }
 
-        self.current_frame_index = frame_index;
-        self.current_frame = Some(self.cached_frames[frame_index].id);
+        self.model.current_frame_index = frame_index;
+        self.model.current_frame = Some(self.model.cached_frames[frame_index].id);
 
-        Ok(self.cached_frames[frame_index].clone())
+        Ok(self.model.cached_frames[frame_index].clone())
     }
 
     /// Move up the stack (to caller frame)
     pub async fn frame_up(&mut self) -> Result<StackFrame> {
-        let new_index = self.current_frame_index + 1;
+        let new_index = self.model.current_frame_index + 1;
         self.select_frame(new_index).await
     }
 
     /// Move down the stack (toward innermost/current frame)
     pub async fn frame_down(&mut self) -> Result<StackFrame> {
-        if self.current_frame_index == 0 {
+        if self.model.current_frame_index == 0 {
             return Err(Error::invalid_state("frame down", "already at innermost frame"));
         }
-        let new_index = self.current_frame_index - 1;
+        let new_index = self.model.current_frame_index - 1;
         self.select_frame(new_index).await
     }
 
     /// Get current frame index
     pub fn get_current_frame_index(&self) -> usize {
-        self.current_frame_index
+        self.model.current_frame_index
     }
 
     /// Enable a breakpoint
@@ -1263,7 +908,7 @@ impl DebugSession {
         // Find and update the breakpoint
         let mut source_breakpoint = None;
 
-        for (file, bps) in &mut self.source_breakpoints {
+        for (file, bps) in &mut self.model.source_breakpoints {
             if let Some(bp) = bps.iter_mut().find(|bp| bp.id == id) {
                 let previous_enabled = bp.enabled;
                 bp.enabled = enabled;
@@ -1274,7 +919,7 @@ impl DebugSession {
 
         let mut function_previous_enabled = None;
         if source_breakpoint.is_none() {
-            if let Some(bp) = self.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
+            if let Some(bp) = self.model.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
                 function_previous_enabled = Some(bp.enabled);
                 bp.enabled = enabled;
             } else {
@@ -1289,6 +934,7 @@ impl DebugSession {
                 Ok(results) => results,
                 Err(error) => {
                     if let Some(bp) = self
+                        .model
                         .source_breakpoints
                         .get_mut(&file)
                         .and_then(|breakpoints| breakpoints.iter_mut().find(|bp| bp.id == id))
@@ -1304,7 +950,7 @@ impl DebugSession {
             let results = match self.client.set_function_breakpoints(func_bps).await {
                 Ok(results) => results,
                 Err(error) => {
-                    if let Some(bp) = self.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
+                    if let Some(bp) = self.model.function_breakpoints.iter_mut().find(|bp| bp.id == id) {
                         bp.enabled = previous_enabled;
                     }
                     return Err(error);
@@ -1338,73 +984,36 @@ impl DebugSession {
 
     /// Ensure we're in stopped state for inspection commands
     fn ensure_stopped(&self) -> Result<()> {
-        match self.state {
+        match self.model.state {
             SessionState::Stopped => Ok(()),
             SessionState::Exited => {
-                Err(Error::ProgramExited(self.exit_code.unwrap_or(0)))
+                Err(Error::ProgramExited(self.model.exit_code.unwrap_or(0)))
             }
-            _ => Err(Error::invalid_state("inspect", &self.state.to_string())),
+            _ => Err(Error::invalid_state("inspect", &self.model.state.to_string())),
         }
     }
 
     /// Get a thread ID (preferring selected > stopped > first)
     async fn get_thread_id(&mut self) -> Result<i64> {
         // Prefer explicitly selected thread
-        if let Some(id) = self.selected_thread {
+        if let Some(id) = self.model.selected_thread {
             return Ok(id);
         }
 
         // Fall back to stopped thread
-        if let Some(id) = self.stopped_thread {
+        if let Some(id) = self.model.stopped_thread {
             return Ok(id);
         }
 
         // Fetch threads and use the first one
-        if self.threads.is_empty() {
-            self.threads = self.client.threads().await?;
+        if self.model.threads.is_empty() {
+            self.model.threads = self.client.threads().await?;
         }
 
-        self.threads
+        self.model
+            .threads
             .first()
             .map(|t| t.id)
             .ok_or_else(|| Error::Internal("No threads available".to_string()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::OutputBuffer;
-
-    #[test]
-    fn clearing_output_resets_byte_accounting() {
-        let mut buffer = OutputBuffer::new(4, 4);
-        buffer.push("stdout", "abcd");
-
-        let drained = buffer.take(true);
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].output, "abcd");
-        assert_eq!(buffer.current_bytes, 0);
-
-        buffer.push("stdout", "xyz");
-        assert_eq!(buffer.current_bytes, 3);
-        assert_eq!(buffer.take(false)[0].output, "xyz");
-    }
-
-    #[test]
-    fn output_is_truncated_on_a_utf8_boundary() {
-        let mut buffer = OutputBuffer::new(4, 5);
-        buffer.push("stdout", "ééé");
-
-        let output = buffer.take(false);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0].output, "éé");
-        assert_eq!(buffer.current_bytes, 4);
-    }
-
-    #[test]
-    fn zero_sized_buffers_discard_output() {
-        let mut buffer = OutputBuffer::new(0, 32);
-        buffer.push("stdout", "discard me");
-        assert!(buffer.take(false).is_empty());
     }
 }

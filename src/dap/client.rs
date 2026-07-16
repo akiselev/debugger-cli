@@ -495,10 +495,21 @@ impl DapClient {
         self.seq.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Send a request without waiting for its response and return its sequence
-    /// number. The response is still registered so adapters that defer it do
-    /// not produce a spurious "unknown request" warning.
-    async fn send_request(&mut self, command: &str, arguments: Option<Value>) -> Result<i64> {
+    /// Send a request and register its pending-response entry, returning the
+    /// sequence number and the response receiver.
+    ///
+    /// This is the single send path for every DAP request. The pending entry
+    /// is registered BEFORE the request is written, so a fast adapter response
+    /// cannot race the registration. Callers that wait drive the returned
+    /// receiver; callers that defer (e.g. `launch` on adapters that respond
+    /// only after `configurationDone`) drop it, which keeps the entry alive in
+    /// the pending map so the eventual response is not a spurious "unknown
+    /// request" warning.
+    async fn send_request_raw(
+        &mut self,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> Result<(i64, oneshot::Receiver<Result<ResponseMessage>>)> {
         let seq = self.next_seq();
 
         // Build request with or without arguments field
@@ -520,10 +531,7 @@ impl DapClient {
         let json = serde_json::to_string(&request)?;
         tracing::trace!("DAP >>> {}", json);
 
-        // Keep a receiver-less pending entry. `process_message` removes it
-        // when the adapter eventually responds; this is essential for launch,
-        // whose response may arrive only after configurationDone.
-        let (tx, _rx) = oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         {
             let mut pending_guard = self.pending.lock().await;
             pending_guard.insert(seq, tx);
@@ -535,6 +543,14 @@ impl DapClient {
             return Err(error);
         }
 
+        Ok((seq, rx))
+    }
+
+    /// Send a request without waiting for its response and return its sequence
+    /// number. The response stays registered so adapters that defer it do not
+    /// produce a spurious "unknown request" warning.
+    async fn send_request(&mut self, command: &str, arguments: Option<Value>) -> Result<i64> {
+        let (seq, _rx) = self.send_request_raw(command, arguments).await?;
         Ok(seq)
     }
 
@@ -549,52 +565,13 @@ impl DapClient {
     }
 
     /// Send a request and wait for the response with configurable timeout
-    ///
-    /// Note: We register the pending response handler BEFORE sending the request
-    /// to avoid a race condition where a fast adapter response arrives before
-    /// we've set up the handler.
     pub async fn request_with_timeout<T: serde::de::DeserializeOwned>(
         &mut self,
         command: &str,
         arguments: Option<Value>,
         timeout: Duration,
     ) -> Result<T> {
-        let seq = self.next_seq();
-
-        // Build request with or without arguments field
-        let request = if let Some(ref args) = arguments {
-            serde_json::json!({
-                "seq": seq,
-                "type": "request",
-                "command": command,
-                "arguments": args
-            })
-        } else {
-            serde_json::json!({
-                "seq": seq,
-                "type": "request",
-                "command": command
-            })
-        };
-
-        // IMPORTANT: Register the pending response handler BEFORE sending the request
-        // to avoid race condition where fast adapter responds before we're ready
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending_guard = self.pending.lock().await;
-            pending_guard.insert(seq, tx);
-        }
-
-        // Now send the request
-        let json = serde_json::to_string(&request)?;
-        tracing::trace!("DAP >>> {}", json);
-
-        if let Err(e) = codec::write_message(&mut self.writer, &json).await {
-            // Remove the pending handler if send failed
-            let mut pending_guard = self.pending.lock().await;
-            pending_guard.remove(&seq);
-            return Err(e);
-        }
+        let (seq, rx) = self.send_request_raw(command, arguments).await?;
 
         // Wait for response with timeout
         let response = tokio::time::timeout(timeout, rx)

@@ -400,7 +400,7 @@ async fn handle_command_inner(
         }
 
         // === Output ===
-        Command::GetOutput { tail, clear } => {
+        Command::GetOutput { tail, clear, cursor } => {
             let sess = session.as_mut().ok_or(Error::SessionNotActive)?;
             // Make output visible immediately instead of waiting for the daemon's
             // periodic event-processing tick.
@@ -408,7 +408,7 @@ async fn handle_command_inner(
             // `--tail` is documented in lines, while the DAP emits arbitrary
             // output chunks. Read the full bounded buffer first, then trim the
             // concatenated stream by lines so chunk boundaries are invisible.
-            let events = sess.get_output(clear);
+            let (events, next_cursor) = sess.read_output(cursor, clear);
 
             let all_output: String = events.iter().map(|e| e.output.as_str()).collect();
             let output = tail
@@ -428,6 +428,7 @@ async fn handle_command_inner(
                 "output": output,
                 "count": events.len(),
                 "events": event_details,
+                "next_cursor": next_cursor,
             }))
         }
 
