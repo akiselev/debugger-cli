@@ -1,33 +1,32 @@
 # debugger-cli
 
-**A command-line debugger built for LLM coding agents**
-
 [![Crates.io](https://img.shields.io/crates/v/debugger-cli.svg)](https://crates.io/crates/debugger-cli)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
-`debugger-cli` is a cross-platform debugging tool that enables LLM coding agents (and humans!) to debug executables using the [Debug Adapter Protocol (DAP)](https://microsoft.github.io/debug-adapter-protocol/). It provides a simple, scriptable CLI interface that maintains persistent debug sessions across multiple command invocations.
+> **Experimental.** Commands, adapter behavior, and output schemas may change while the debugger interface is still being developed.
 
-## Why This Exists
+`debugger-cli` is a cross-platform, scriptable debugger built on the [Debug Adapter Protocol (DAP)](https://microsoft.github.io/debug-adapter-protocol/). A background daemon keeps debug sessions alive across separate CLI invocations and buffers debugger events between commands.
 
-LLM agents need to debug programs interactively, but CLI commands are ephemeral. Traditional debuggers require an interactive session that's incompatible with agent workflows. This tool solves that by:
+## Design
 
-- **Maintaining persistent sessions**: A background daemon keeps the debug session alive between commands
-- **Buffering events**: Output, breakpoint hits, and stop events are captured even when no client is connected
-- **Providing a unified interface**: Works with any DAP adapter (lldb-dap, CodeLLDB, debugpy, Delve, etc.)
-- **Being LLM-friendly**: Clear, parseable output optimized for agent consumption
+The CLI is intended to make interactive debugger state accessible to ordinary shell automation:
+
+- **Persistent sessions**: a background daemon keeps the debug session alive between commands
+- **Buffered events**: output, breakpoint hits, and stop events are retained when no client is connected
+- **DAP adapters**: the same CLI can drive lldb-dap, CodeLLDB, debugpy, Delve, GDB, and other compatible adapters
+- **Structured output**: commands expose parseable output for scripts and other tools
 
 ## Features
 
-- **Multi-language support**: Debug C, C++, Rust, Python, Go, and more
-- **Zero-friction setup**: `debugger setup lldb` installs everything you need
-- **Full breakpoint control**: Line, function, and conditional breakpoints
-- **Rich inspection**: Variables, expressions, stack traces, and source context
-- **Thread management**: List, switch, and navigate threads and stack frames
-- **Structured output**: JSON-friendly for agent consumption
-- **Cross-platform**: Linux, macOS, and Windows support
+- Debug C, C++, Rust, Python, Go, and other languages supported by installed DAP adapters
+- Install supported adapters with `debugger setup`
+- Line, function, conditional, and hit-count breakpoints
+- Variables, expressions, stack traces, source context, threads, and frames
+- Structured command output
+- Linux, macOS, and Windows support
 
-## Quick Start
+## Quick start
 
 ### Installation
 
@@ -35,7 +34,7 @@ LLM agents need to debug programs interactively, but CLI commands are ephemeral.
 # Install from crates.io
 cargo install debugger-cli
 
-# Install a debug adapter (e.g., lldb for C/C++/Rust)
+# Install a debug adapter (e.g. lldb for C/C++/Rust)
 debugger setup lldb
 ```
 
@@ -49,7 +48,7 @@ cargo install --path .
 
 ### Prerequisites
 
-You need a DAP-compatible debug adapter. The easiest way is:
+You need a DAP-compatible debug adapter. The setup command can install supported adapters:
 
 ```bash
 # List available debuggers
@@ -63,12 +62,13 @@ debugger setup gdb       # C, C++ (requires GDB 14.1+)
 debugger setup cuda-gdb  # CUDA (Linux only)
 ```
 
-Or install manually:
+Or install one manually:
+
 - **Arch Linux**: `sudo pacman -S lldb`
 - **Ubuntu/Debian**: `sudo apt install lldb`
 - **macOS**: `xcode-select --install` (includes lldb)
 
-### Basic Usage
+### Basic usage
 
 ```bash
 # Start debugging a program
@@ -100,9 +100,9 @@ debugger finish         # Step out
 debugger stop
 ```
 
-## Commands Reference
+## Commands reference
 
-### Session Management
+### Session management
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
@@ -114,9 +114,10 @@ debugger stop
 | `restart` | | Restart program when supported by the active DAP adapter |
 
 Start options:
-- `--adapter <name>` - Use specific debug adapter
-- `--stop-on-entry` - Stop at program entry point
-- `--break <location>` / `-b` - Set initial breakpoint(s) before program starts
+
+- `--adapter <name>`: use a specific debug adapter
+- `--stop-on-entry`: stop at program entry point
+- `--break <location>` / `-b`: set initial breakpoint(s) before program starts
 
 ### Breakpoints
 
@@ -130,10 +131,11 @@ Start options:
 | `breakpoint disable <id>` | | Disable a breakpoint without removing it |
 
 Breakpoint options:
-- `--condition <expr>` - Break only when expression is true
-- `--hit-count <n>` - Break after N hits
 
-### Execution Control
+- `--condition <expr>`: break only when expression is true
+- `--hit-count <n>`: break after N hits
+
+### Execution control
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
@@ -164,7 +166,7 @@ Breakpoint options:
 | `up` | Move up the stack (to caller) |
 | `down` | Move down the stack |
 
-### Program Output
+### Program output
 
 | Command | Description |
 |---------|-------------|
@@ -191,16 +193,12 @@ Breakpoint options:
 └─────────────────┘                     └─────────────────┘                     └─────────────────┘
 ```
 
-The tool runs as a **single binary in two modes**:
+The tool runs as a single binary in two modes:
 
-1. **CLI Mode** (thin client): Parses commands, connects to daemon via IPC, displays results
-2. **Daemon Mode** (background): Manages the debug session, communicates with the DAP adapter, buffers events
+1. **CLI mode**: parses commands, connects to the daemon over IPC, and displays results
+2. **Daemon mode**: manages the debug session, communicates with the DAP adapter, and buffers events
 
-This architecture allows:
-- Persistent debug sessions across multiple CLI invocations
-- Event buffering when no client is connected
-- Non-blocking command execution
-- Clean process lifecycle management
+This provides persistent sessions, event buffering, non-blocking commands, and explicit process lifecycle management.
 
 ## Configuration
 
@@ -219,22 +217,22 @@ lldb-dap = "/usr/bin/lldb-dap"
 codelldb = "~/.local/share/debugger-cli/adapters/codelldb/adapter/codelldb"
 ```
 
-## Supported Debug Adapters
+## Supported debug adapters
 
 | Adapter | Languages | Status |
 |---------|-----------|--------|
-| lldb-dap | C, C++, Rust, Swift | ✅ Full support |
-| debugpy | Python | ✅ Full support |
-| Delve | Go | ✅ Full support |
-| GDB | C, C++ | ✅ Full support (requires GDB 14.1+) |
-| CUDA-GDB | CUDA, C, C++ | ✅ Full support (Linux only) |
-| js-debug | JavaScript, TypeScript | ✅ Full support |
-| CodeLLDB | C, C++, Rust | ✅ Full support |
-| cpptools | C, C++ | 🚧 Planned |
+| lldb-dap | C, C++, Rust, Swift | Full support |
+| debugpy | Python | Full support |
+| Delve | Go | Full support |
+| GDB | C, C++ | Full support (requires GDB 14.1+) |
+| CUDA-GDB | CUDA, C, C++ | Full support (Linux only) |
+| js-debug | JavaScript, TypeScript | Full support |
+| CodeLLDB | C, C++, Rust | Full support |
+| cpptools | C, C++ | Planned |
 
 ## Examples
 
-### Debugging a Rust Program
+### Debugging a Rust program
 
 ```bash
 # Build with debug info
@@ -270,7 +268,7 @@ debugger await
 debugger stop
 ```
 
-### Debugging a Go Program
+### Debugging a Go program
 
 ```bash
 # Build with debug info
@@ -293,7 +291,7 @@ debugger locals
 debugger stop
 ```
 
-### Debugging CUDA Code (Linux)
+### Debugging CUDA code (Linux)
 
 ```bash
 # Compile with debug info
@@ -318,21 +316,22 @@ debugger stop
 ## Development
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the developer guide, including:
-- Architecture deep-dive
-- Adding new commands
-- Working with the DAP client
-- Testing and debugging tips
+
+- architecture details
+- adding new commands
+- working with the DAP client
+- testing and debugging
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
+Contributions are welcome.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+1. Fork the repository.
+2. Create a feature branch.
+3. Commit the change.
+4. Push the branch.
+5. Open a pull request.
